@@ -192,8 +192,27 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
             return;
           }
 
-          // Check if payment is required
-          if (entrypointResponse.status === 402 || responseData.error?.code === "payment_required") {
+          // Log the response status for debugging
+          console.log(`[discord] Entrypoint response status: ${entrypointResponse.status}`);
+
+          // Check if payment is required (402 or payment_required error)
+          // Also check if the response indicates payment was needed but wasn't provided
+          let requiresPayment = 
+            entrypointResponse.status === 402 || 
+            responseData.error?.code === "payment_required" ||
+            responseData.payment_required === true ||
+            (entrypointResponse.headers.get("x-payment-required") === "true");
+
+          // If we got a successful response but payment should be required, 
+          // we need to enforce payment manually
+          // Agent-kit may not enforce payment automatically for internal calls
+          // For Discord commands, we should ALWAYS require payment via x402
+          if (entrypointResponse.status === 200 && !requiresPayment) {
+            console.log(`[discord] Entrypoint returned success without payment - enforcing payment requirement for Discord`);
+            requiresPayment = true;
+          }
+
+          if (requiresPayment) {
             // Store Discord webhook info for callback (expires in 1 hour)
             pendingDiscordCallbacks.set(interaction.token, {
               applicationId: interaction.application_id,

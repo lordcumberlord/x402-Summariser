@@ -10,7 +10,8 @@
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "agent": "bun run src/agent.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "register-slash": "bun run scripts/register-slash-command.ts"
   },
   "dependencies": {
     "@lucid-dreams/agent-kit": "^0.2.8",

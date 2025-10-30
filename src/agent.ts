@@ -381,6 +381,182 @@ addEntrypoint({
 
 export { app };
 
+// Export handler logic for use in Discord interactions
+export async function executeSummariseChat(input: {
+  channelId?: string;
+  serverId?: string;
+  lookbackMinutes?: number;
+  startMessageUrl?: string;
+  endMessageUrl?: string;
+}) {
+  // This is a simplified version that can be called from Discord interactions
+  // It reuses the same logic as the entrypoint handler
+  const ctx = {
+    input,
+  } as any;
+  
+  // Call the actual handler - we need to access it
+  // For now, we'll need to extract the logic
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) {
+    throw new Error(
+      "Missing DISCORD_BOT_TOKEN. Provide a Discord bot token in the environment."
+    );
+  }
+
+  const baseUrl =
+    process.env.DISCORD_API_BASE_URL ?? DISCORD_API_DEFAULT_BASE;
+
+  const now = new Date();
+  const lookbackMinutes =
+    typeof input.lookbackMinutes === "number"
+      ? input.lookbackMinutes
+      : undefined;
+  const startMessageUrl = input.startMessageUrl;
+  const endMessageUrl = input.endMessageUrl;
+
+  const usingLookback = typeof lookbackMinutes === "number";
+  const usingMessageLinks = Boolean(startMessageUrl && endMessageUrl);
+
+  let start: Date;
+  let end: Date;
+  let initialAfterSnowflake: string;
+  let endMessageId: string | undefined;
+  let channelId: string;
+  let guildId: string | null = input.serverId?.trim() ?? null;
+  let rangeLabel: string;
+
+  if (usingLookback) {
+    const minutes = lookbackMinutes as number;
+    channelId = (input.channelId ?? "").trim();
+    const lookbackMs = minutes * 60 * 1000;
+    start = new Date(now.getTime() - lookbackMs);
+    const discordEpochDate = new Date(Number(DISCORD_EPOCH));
+    if (start < discordEpochDate) {
+      start = discordEpochDate;
+    }
+    end = now;
+    initialAfterSnowflake = snowflakeFromDate(start, -1n);
+    rangeLabel = `the last ${minutes} minutes`;
+  } else if (usingMessageLinks) {
+    const startLink = parseDiscordMessageUrl(startMessageUrl as string);
+    const endLink = parseDiscordMessageUrl(endMessageUrl as string);
+    if (!startLink || !endLink) {
+      throw new Error("Unable to parse one or both Discord message links.");
+    }
+
+    if (startLink.channelId !== endLink.channelId) {
+      throw new Error(
+        "Start and end message links must reference the same channel."
+      );
+    }
+
+    if (
+      input.channelId &&
+      input.channelId.trim() !== startLink.channelId
+    ) {
+      throw new Error(
+        "Provided channel ID does not match the supplied message links."
+      );
+    }
+
+    channelId = startLink.channelId;
+    const startMessageId = startLink.messageId;
+    const endMessageIdResolved = endLink.messageId;
+
+    if (compareSnowflakes(startMessageId, endMessageIdResolved) > 0) {
+      throw new Error(
+        "Start message link must precede (or equal) the end message link."
+      );
+    }
+
+    initialAfterSnowflake = decrementSnowflake(startMessageId);
+    endMessageId = endMessageIdResolved;
+
+    start = discordSnowflakeToDate(startMessageId);
+    const endDate = discordSnowflakeToDate(endMessageIdResolved);
+    end = new Date(endDate.getTime() + 1000);
+
+    guildId =
+      guildId ?? startLink.guildId ?? endLink.guildId ?? null;
+
+    rangeLabel = `message links ${startMessageUrl} → ${endMessageUrl}`;
+  } else {
+    throw new Error(
+      "Provide a lookback window or both start and end message links."
+    );
+  }
+
+  const channelMeta = await fetchChannelInfo({
+    token,
+    baseUrl,
+    channelId,
+  });
+
+  guildId = guildId ?? channelMeta?.guild_id ?? null;
+
+  const guildMeta = guildId
+    ? await fetchGuildInfo({ token, baseUrl, guildId })
+    : null;
+
+  const channelLabelParts = [
+    guildMeta?.name ?? (guildId ? `server ${guildId}` : "unknown server"),
+    channelMeta?.name ? `#${channelMeta.name}` : `channel ${channelId}`,
+  ];
+  const channelLabel = channelLabelParts.join(" · ");
+
+  const messages = await fetchMessagesBetween({
+    token,
+    baseUrl,
+    channelId,
+    start,
+    end,
+    initialAfterSnowflake,
+    endMessageId,
+  });
+
+  if (!messages.length) {
+    return {
+      summary: `No Discord messages found in ${channelLabel} for ${rangeLabel}.`,
+      actionables: [],
+    };
+  }
+
+  const conversation = formatConversation(messages);
+  const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
+
+  const llm = axClient.ax;
+  if (!llm) {
+    const fallbackSummary = conversation
+      .split("\n")
+      .slice(0, 5)
+      .join("\n")
+      .trim();
+
+    return {
+      summary:
+        fallbackSummary ||
+        `Messages retrieved (${rangeLabel}), but AxFlow is not configured to generate a summary.`,
+      actionables: [],
+    };
+  }
+
+  const result = await discordSummaryFlow.forward(llm, {
+    conversation,
+    timeWindow,
+    channelLabel,
+  });
+
+  discordSummaryFlow.resetUsage();
+
+  return {
+    summary: result.summary ?? "",
+    actionables: Array.isArray(result.actionables)
+      ? (result.actionables as string[])
+      : [],
+  };
+}
+
 function formatConversation(messages: DiscordMessage[]): string {
   const sorted = [...messages].sort(
     (a, b) =>

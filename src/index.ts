@@ -343,13 +343,46 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
     const followupUrl = `${baseUrl}/webhooks/${callbackData.applicationId}/${discord_token}`;
 
     const output = result?.output || result;
+    
+    // Extract summary, filtering out any payment-related messages that might have leaked in
+    let summary = output?.summary || "No summary available";
+    
+    // Remove payment request messages that might have been included in the summary
+    summary = summary
+      .replace(/💳\s*\*\*Payment Required\*\*[\s\S]*?automatically\./gi, "")
+      .replace(/🔗\s*\*\*Pay.*?\n/gi, "")
+      .replace(/https?:\/\/[^\s]*pay[^\s]*/gi, "")
+      .replace(/To summarise this channel, please pay.*?via x402\./gi, "")
+      .trim();
+    
+    // If summary is empty or too short after filtering, use original
+    if (!summary || summary.length < 10) {
+      summary = output?.summary || "Summary generated successfully.";
+    }
+    
     let content = `✅ **Payment Confirmed**\n\n`;
-    content += `**Summary**\n${output?.summary || "No summary available"}\n\n`;
+    content += `**Summary**\n${summary}\n\n`;
     
     if (output?.actionables && output.actionables.length > 0) {
       content += `**Action Items**\n${output.actionables.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}`;
     } else {
       content += `*No action items identified.*`;
+    }
+    
+    // Log payment verification info if available
+    // x402 payments should include payment metadata in the response
+    console.log(`[payment] Payment callback received for token: ${discord_token.substring(0, 20)}...`);
+    console.log(`[payment] Result keys:`, Object.keys(result || {}));
+    if (result?.payment || result?.x402Payment || result?.paymentTx) {
+      const paymentInfo = result?.payment || result?.x402Payment || result?.paymentTx;
+      console.log(`[payment] Payment verified:`, {
+        txHash: paymentInfo.txHash || paymentInfo.hash || paymentInfo.transactionHash,
+        from: paymentInfo.from || paymentInfo.sender || paymentInfo.payer,
+        amount: paymentInfo.amount || paymentInfo.value,
+        currency: paymentInfo.currency || paymentInfo.token || "USDC"
+      });
+    } else {
+      console.log(`[payment] No payment metadata found in result. Full result:`, JSON.stringify(result, null, 2).substring(0, 500));
     }
 
     const followupResponse = await fetch(followupUrl, {
@@ -418,7 +451,8 @@ const server = Bun.serve({
         return Response.json({ error: "Missing required parameters" }, { status: 400 });
       }
 
-      const entrypointUrl = `/entrypoints/summarise%20chat/invoke`;
+      const agentBaseUrl = process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
+      const entrypointUrl = `${agentBaseUrl}/entrypoints/summarise%20chat/invoke`;
       const price = process.env.ENTRYPOINT_PRICE || "0.10";
       const currency = process.env.PAYMENT_CURRENCY || "USDC";
       
@@ -450,12 +484,15 @@ const server = Bun.serve({
     <div id="status" style="margin-top: 20px;"></div>
   </div>
   <script type="module">
+    import { x402Fetch } from 'https://cdn.jsdelivr.net/npm/x402-fetch@0.7.0/+esm';
+    
     async function pay() {
       const status = document.getElementById('status');
-      status.innerHTML = '<p>Processing payment...</p>';
+      status.innerHTML = '<p>Connecting wallet...</p>';
       
       try {
-        const response = await fetch('${entrypointUrl}', {
+        // Use x402-fetch to actually process payment
+        const response = await x402Fetch('${entrypointUrl}', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -470,7 +507,21 @@ const server = Bun.serve({
         const data = await response.json();
         
         if (response.ok) {
-          status.innerHTML = '<p style="color: green;">✅ Payment successful! Check Discord for your summary.</p>';
+          // Log payment info if available
+          if (data.payment) {
+            console.log('Payment details:', {
+              txHash: data.payment.txHash,
+              from: data.payment.from,
+              amount: data.payment.amount,
+              currency: data.payment.currency
+            });
+            status.innerHTML = \`<p style="color: green;">✅ Payment successful!</p>
+              <p style="font-size: 12px; color: #666;">TX: \${data.payment.txHash?.substring(0, 20)}...</p>
+              <p>Check Discord for your summary.</p>\`;
+          } else {
+            status.innerHTML = '<p style="color: green;">✅ Payment successful! Check Discord for your summary.</p>';
+          }
+          
           ${discordCallback ? `fetch('/discord-callback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -485,7 +536,11 @@ const server = Bun.serve({
           status.innerHTML = '<p style="color: red;">Error: ' + (data.error?.message || JSON.stringify(data)) + '</p>';
         }
       } catch (error) {
+        console.error('Payment error:', error);
         status.innerHTML = '<p style="color: red;">Error: ' + error.message + '</p>';
+        if (error.message.includes('wallet') || error.message.includes('user rejected')) {
+          status.innerHTML += '<p style="font-size: 12px; color: #666;">Make sure you have an x402 wallet installed and approved the transaction.</p>';
+        }
       }
     }
     window.pay = pay;

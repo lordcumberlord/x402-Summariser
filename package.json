@@ -16,6 +16,7 @@
   "dependencies": {
     "@lucid-dreams/agent-kit": "^0.2.8",
     "tweetnacl": "^1.0.3",
+    "x402-fetch": "^0.7.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {

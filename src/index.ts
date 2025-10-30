@@ -1,25 +1,45 @@
 import { app, executeSummariseChat } from "./agent";
+import nacl from "tweetnacl";
 
 const port = Number(process.env.PORT ?? 8787);
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const DISCORD_API_DEFAULT_BASE = "https://discord.com/api/v10";
 
-// Discord signature verification
-async function verifyDiscordRequest(
+// Discord signature verification using Ed25519
+function verifyDiscordRequest(
   body: string,
   signature: string,
   timestamp: string
-): Promise<boolean> {
+): boolean {
   if (!PUBLIC_KEY) {
     console.warn("[discord] DISCORD_PUBLIC_KEY not set, skipping signature verification");
-    return true; // Allow in development
+    return false; // Don't allow if PUBLIC_KEY is required
   }
 
-  // TODO: Implement proper Ed25519 signature verification
-  // Discord uses Ed25519 signatures which requires a library like tweetnacl
-  // For now, we'll skip verification but log a warning
-  console.warn("[discord] Signature verification not fully implemented. Consider adding tweetnacl library.");
-  return true; // Temporarily allow all requests
+  try {
+    // Convert hex strings to Uint8Arrays
+    const publicKeyBytes = Uint8Array.from(
+      Buffer.from(PUBLIC_KEY, "hex")
+    );
+    const signatureBytes = Uint8Array.from(
+      Buffer.from(signature, "hex")
+    );
+
+    // Discord signs: timestamp + body
+    const message = new TextEncoder().encode(timestamp + body);
+
+    // Verify signature using Ed25519
+    const isValid = nacl.sign.detached.verify(message, signatureBytes, publicKeyBytes);
+    
+    if (!isValid) {
+      console.warn("[discord] Signature verification failed");
+    }
+    
+    return isValid;
+  } catch (error) {
+    console.error("[discord] Signature verification error:", error);
+    return false;
+  }
 }
 
 // Handle Discord interactions
@@ -52,7 +72,7 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
         return Response.json({ error: "Missing signature headers" }, { status: 401 });
       }
 
-      const isValid = await verifyDiscordRequest(body, signature, timestamp);
+      const isValid = verifyDiscordRequest(body, signature, timestamp);
       if (!isValid) {
         console.warn("[discord] Invalid signature");
         return Response.json({ error: "Invalid signature" }, { status: 401 });

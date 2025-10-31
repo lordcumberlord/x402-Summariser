@@ -558,6 +558,7 @@ const server = Bun.serve({
         console.log('📞 Calling entrypoint:', entrypointUrl);
         
         // Use wrapped fetch to process payment
+        console.log('📞 Making payment request to:', entrypointUrl);
         const response = await x402Fetch(entrypointUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -570,6 +571,9 @@ const server = Bun.serve({
           }),
         });
 
+        console.log('📊 Response status:', response.status, response.statusText);
+        console.log('📋 Response headers:', Object.fromEntries(response.headers.entries()));
+        
         const data = await response.json();
         console.log('📦 Response data:', data);
         
@@ -631,6 +635,40 @@ const server = Bun.serve({
 
     // Agent app routes - intercept entrypoint responses for Discord callbacks
     if (url.pathname.includes("/entrypoints/") && url.pathname.includes("/invoke")) {
+      // Check if this is the "summarise chat" entrypoint and enforce payment
+      if (url.pathname.includes("summarise%20chat") || url.pathname.includes("summarise chat")) {
+        const hasPaymentHeader = req.headers.get("X-PAYMENT");
+        console.log(`[payment] Entrypoint called: ${url.pathname}`);
+        console.log(`[payment] X-PAYMENT header present: ${!!hasPaymentHeader}`);
+        
+        if (!hasPaymentHeader) {
+          // Return 402 Payment Required with proper payment requirements
+          const payToAddress = process.env.PAY_TO || "0x1b0006DbFbF4d8Ec99cd7C40C43566EaA7D95feD";
+          const fullEntrypointUrl = url.origin + url.pathname + (url.search ? url.search : "");
+          
+          console.log(`[payment] Returning 402 Payment Required for: ${fullEntrypointUrl}`);
+          return Response.json(
+            {
+              x402Version: "1.0",
+              accepts: [
+                {
+                  scheme: "exact",
+                  resource: fullEntrypointUrl,
+                  description: "Summarise Discord channel",
+                  mimeType: "application/json",
+                  payTo: payToAddress,
+                  maxAmountRequired: "100000", // 0.10 USDC (6 decimals)
+                  maxTimeoutSeconds: 300,
+                  network: "base",
+                  asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
+                },
+              ],
+            },
+            { status: 402 }
+          );
+        }
+      }
+      
       const discordCallback = url.searchParams.get("discord_callback");
       
       if (discordCallback) {

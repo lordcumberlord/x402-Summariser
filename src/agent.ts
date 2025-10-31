@@ -1088,11 +1088,17 @@ function rewriteStatementBullet(
     return ensurePeriod(capitalizeFirst(clause));
   }
 
-  const firstWordMatch = clause.match(/^([A-Z][A-Za-z0-9']*)\b/);
+  const firstWordMatch = clause.match(/^([A-Za-z0-9'`()-]+)\b/);
+  const firstWord = firstWordMatch ? firstWordMatch[1] : undefined;
+
+  if (firstWord && isLikelyProperNoun(firstWord) && !isSameName(firstWord, speaker)) {
+    return rewriteThirdPartyStatement(speaker, clause);
+  }
+
   if (
-    firstWordMatch &&
-    firstWordMatch[1].toLowerCase() !== speaker.toLowerCase() &&
-    speakerSet.has(normalizeName(firstWordMatch[1]))
+    firstWord &&
+    firstWord.toLowerCase() !== speaker.toLowerCase() &&
+    speakerSet.has(normalizeName(firstWord))
   ) {
     return ensurePeriod(capitalizeFirst(clause));
   }
@@ -1136,6 +1142,87 @@ function neutralizeFirstPersonPronouns(text: string, speaker: string): string {
   }
 
   return working;
+}
+
+const COMMON_LOWER_WORDS = new Set([
+  "the",
+  "this",
+  "that",
+  "there",
+  "then",
+  "they",
+  "these",
+  "those",
+  "here",
+  "good",
+  "great",
+  "well",
+  "okay",
+  "anyway",
+  "however",
+  "also",
+  "maybe",
+  "possibly",
+  "never",
+  "absentees",
+]);
+
+function isLikelyProperNoun(word: string): boolean {
+  if (!word) return false;
+  if (!/^[A-Z][A-Za-z0-9'`()-]*$/.test(word)) {
+    return false;
+  }
+
+  const lower = word.toLowerCase();
+  if (COMMON_LOWER_WORDS.has(lower)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isSameName(a: string, b: string): boolean {
+  return normalizeName(a) === normalizeName(b);
+}
+
+function rewriteThirdPartyStatement(speaker: string, clause: string): string {
+  const sentences = splitIntoSentences(clause);
+  if (!sentences.length) {
+    return ensurePeriod(`${speaker} shared an update.`);
+  }
+
+  const firstSentence = sentences[0].replace(/[.!?]+$/g, "").trim();
+  if (!firstSentence) {
+    return ensurePeriod(`${speaker} shared an update.`);
+  }
+
+  let rewritten = ensurePeriod(`${speaker} relayed that ${firstSentence}`);
+
+  if (sentences.length > 1) {
+    const tail = sentences
+      .slice(1)
+      .map((sentence) => ensurePeriod(capitalizeFirst(sentence.trim())));
+    const tailText = tail.filter(Boolean).join(" ");
+    if (tailText) {
+      rewritten = `${rewritten} ${tailText}`.trim();
+    }
+  }
+
+  return rewritten;
+}
+
+function splitIntoSentences(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const sentences = trimmed.match(/[^.!?]+[.!?]?/g);
+  if (sentences && sentences.length) {
+    return sentences.map((s) => s.trim()).filter(Boolean);
+  }
+
+  return [trimmed];
 }
 
 function parseQuestion(question: string): QuestionParseResult {

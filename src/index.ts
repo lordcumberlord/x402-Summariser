@@ -561,9 +561,67 @@ const server = Bun.serve({
             }
             
             accountAddress = accounts[0];
-          } catch (connError) {
+            
+            // Ensure we're on Base network (required for payment)
+            status.innerHTML = '<p>🔗 Checking network...</p>';
+            const BASE_CHAIN_ID = 8453;
+            const BASE_CHAIN_ID_HEX = '0x' + BASE_CHAIN_ID.toString(16);
+            
+            try {
+              const currentChainIdHex = await walletProvider.request({ method: 'eth_chainId' });
+              const currentChainId = parseInt(currentChainIdHex, 16);
+              
+              console.log('🔗 Current network chain ID:', currentChainId);
+              
+              if (currentChainId !== BASE_CHAIN_ID) {
+                status.innerHTML = '<p>⚠️ Switching to Base network...</p>';
+                console.log('⚠️ Wrong network. Current:', currentChainId, 'Required:', BASE_CHAIN_ID);
+                
+                try {
+                  // Try to switch to Base network
+                  await walletProvider.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: BASE_CHAIN_ID_HEX }],
+                  });
+                  console.log('✅ Successfully switched to Base network');
+                  ready.innerHTML = '<p>✅ Switched to Base network</p>';
+                } catch (switchError: any) {
+                  // If the error is 4902, the chain is not added to MetaMask
+                  if (switchError.code === 4902) {
+                    console.log('⚠️ Base network not found in wallet. Adding...');
+                    status.innerHTML = '<p>➕ Adding Base network to wallet...</p>';
+                    
+                    await walletProvider.request({
+                      method: 'wallet_addEthereumChain',
+                      params: [{
+                        chainId: BASE_CHAIN_ID_HEX,
+                        chainName: 'Base',
+                        nativeCurrency: {
+                          name: 'Ethereum',
+                          symbol: 'ETH',
+                          decimals: 18
+                        },
+                        rpcUrls: ['https://mainnet.base.org'],
+                        blockExplorerUrls: ['https://basescan.org']
+                      }],
+                    });
+                    console.log('✅ Base network added successfully');
+                  } else if (switchError.code === 4001) {
+                    throw new Error('Network switch rejected. Please switch to Base network manually in MetaMask.');
+                  } else {
+                    throw new Error('Failed to switch network. Please switch to Base network manually in MetaMask.');
+                  }
+                }
+              } else {
+                console.log('✅ Already on Base network');
+              }
+            } catch (networkError: any) {
+              console.error('❌ Network check error:', networkError);
+              throw new Error('Network error: ' + (networkError.message || 'Please ensure you are on Base network'));
+            }
+          } catch (connError: any) {
             if (connError.code === 4001) {
-              throw new Error('Wallet connection rejected. Please approve the connection to rows continue.');
+              throw new Error('Wallet connection rejected. Please approve the connection to continue.');
             }
             throw connError;
           }

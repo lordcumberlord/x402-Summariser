@@ -444,7 +444,23 @@ addEntrypoint({
         model: usageEntry?.model,
       };
     } catch (error: any) {
-      console.error("[discord-summary-agent] LLM flow error:", error);
+      const errorDetails: Record<string, unknown> = {
+        message: error?.message,
+        name: error?.name,
+        stack: error?.stack,
+      };
+
+      if (error?.response) {
+        errorDetails.responseStatus = error.response.status;
+        errorDetails.responseData = error.response?.data;
+        errorDetails.responseHeaders = error.response?.headers;
+      }
+
+      if (error?.cause) {
+        errorDetails.cause = error.cause;
+      }
+
+      console.error("[discord-summary-agent] LLM flow error:", errorDetails);
       discordSummaryFlow.resetUsage();
 
       const fallbackSummary = conversation

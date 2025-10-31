@@ -485,7 +485,8 @@ const server = Bun.serve({
         "x402/types": "https://esm.sh/x402@0.7.0/types?bundle",
         "x402/client": "https://esm.sh/x402@0.7.0/client?bundle",
         "x402/shared": "https://esm.sh/x402@0.7.0/shared?bundle",
-        "viem": "https://esm.sh/viem@2.21.26?bundle"
+        "viem": "https://esm.sh/viem@2.21.26?bundle",
+        "viem/chains": "https://esm.sh/viem@2.21.26/chains?bundle"
       }
     }
   </script>
@@ -500,14 +501,15 @@ const server = Bun.serve({
     (async () => {
       try {
         console.log('Loading x402-fetch and viem via esm.sh (bundled)...');
-        const [x402Module, viemModule] = await Promise.all([
+        const [x402Module, viemModule, chainsModule] = await Promise.all([
           import('x402-fetch'),
-          import('viem')
+          import('viem'),
+          import('viem/chains')
         ]);
         wrapFetchWithPayment = x402Module.wrapFetchWithPayment;
         createWalletClient = viemModule.createWalletClient;
         custom = viemModule.custom;
-        base = viemModule.base;
+        base = chainsModule.base;
         
         if (wrapFetchWithPayment && createWalletClient && custom && base) {
           console.log('✅ x402-fetch and viem loaded successfully');

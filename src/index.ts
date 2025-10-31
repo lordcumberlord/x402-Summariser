@@ -483,57 +483,67 @@ const server = Bun.serve({
     <button class="button" onclick="pay()">Pay $${price} ${currency}</button>
     <div id="status" style="margin-top: 20px;"></div>
   </div>
-  <script type="module">
-    let x402Fetch;
-    
-    // Try to load x402-fetch from CDN with error handling
-    // Based on package.json: ESM module is at dist/esm/index.mjs
-    (async () => {
-      const cdnUrls = [
-        'https://unpkg.com/x402-fetch@0.7.0/dist/esm/index.mjs',
-        'https://cdn.jsdelivr.net/npm/x402-fetch@0.7.0/dist/esm/index.mjs',
-        'https://esm.sh/x402-fetch@0.7.0',
-      ];
-      
-      for (const url of cdnUrls) {
-        try {
-          console.log(\`Trying to load x402-fetch from: \${url}\`);
-          const module = await import(url);
-          x402Fetch = module.x402Fetch || module.default?.x402Fetch || module.default;
-          
-          if (x402Fetch) {
-            console.log(\`✅ x402-fetch loaded successfully from: \${url}\`);
-            break;
-          } else {
-            console.warn(\`⚠️ Module loaded but x402Fetch not found. Module keys:\`, Object.keys(module));
-          }
-        } catch (importError) {
-          console.warn(\`❌ Failed to import from \${url}:\`, importError.message);
-          continue;
-        }
+  <script type="importmap">
+    {
+      "imports": {
+        "x402-fetch": "https://esm.sh/x402-fetch@0.7.0?bundle",
+        "x402/types": "https://esm.sh/x402@0.7.0/types?bundle",
+        "x402/client": "https://esm.sh/x402@0.7.0/client?bundle",
+        "x402/shared": "https://esm.sh/x402@0.7.0/shared?bundle"
       }
-      
-      if (!x402Fetch) {
-        console.error('❌ Failed to load x402-fetch from any CDN. You may need to install an x402 wallet browser extension.');
+    }
+  </script>
+  <script type="module">
+    let wrapFetchWithPayment;
+    let createSigner;
+    
+    // Load x402-fetch using import map (esm.sh with bundle flag handles dependencies)
+    (async () => {
+      try {
+        console.log('Loading x402-fetch via esm.sh (bundled)...');
+        const module = await import('x402-fetch');
+        wrapFetchWithPayment = module.wrapFetchWithPayment;
+        createSigner = module.createSigner;
+        
+        if (wrapFetchWithPayment && createSigner) {
+          console.log('✅ x402-fetch loaded successfully');
+        } else {
+          console.error('❌ wrapFetchWithPayment or createSigner not found. Available exports:', Object.keys(module));
+        }
+      } catch (importError) {
+        console.error('❌ Failed to import x402-fetch:', importError);
+        console.error('Error details:', importError.message);
       }
     })();
     
     async function pay() {
       const status = document.getElementById('status');
       
-      if (!x402Fetch) {
+      if (!wrapFetchWithPayment || !createSigner) {
         status.innerHTML = '<p style="color: red;">⚠️ Error: Could not load x402 payment library.</p><p style="font-size: 12px; color: #666;">Please check your browser console for details. Make sure you have an x402 wallet browser extension installed.</p>';
-        console.error('❌ x402Fetch is not available');
+        console.error('❌ x402-fetch is not available');
         return;
       }
       
       status.innerHTML = '<p>🔌 Connecting wallet...</p>';
       
       try {
+        // Check if window.ethereum (MetaMask) or other wallet is available
+        if (typeof window.ethereum === 'undefined' && typeof window.x402 === 'undefined') {
+          throw new Error('No wallet found. Please install MetaMask or an x402-compatible wallet extension.');
+        }
+        
+        // Create signer from wallet
+        const walletClient = window.ethereum || window.x402;
+        const signer = await createSigner(walletClient);
+        
+        // Wrap fetch with payment handling
+        const x402Fetch = wrapFetchWithPayment(fetch, signer);
+        
         const entrypointUrl = '${entrypointUrl}';
         console.log('📞 Calling entrypoint:', entrypointUrl);
         
-        // Use x402-fetch to actually process payment
+        // Use wrapped fetch to process payment
         const response = await x402Fetch(entrypointUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

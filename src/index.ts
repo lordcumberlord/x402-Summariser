@@ -646,40 +646,79 @@ const server = Bun.serve({
         
         // Use wrapped fetch to process payment
         console.log('📞 Making payment request to:', entrypointUrl);
-        const response = await x402Fetch(entrypointUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            input: {
-              channelId: '${channelId}',
-              serverId: '${serverId || ""}',
-              lookbackMinutes: ${lookbackMinutes},
-            },
-          }),
-        });
+        
+        status.innerHTML = '<p>💳 Processing payment...</p>';
+        
+        let response;
+        try {
+          response = await x402Fetch(entrypointUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input: {
+                channelId: '${channelId}',
+                serverId: '${serverId || ""}',
+                lookbackMinutes: ${lookbackMinutes},
+              },
+            }),
+          });
+        } catch (paymentError) {
+          console.error('❌ Payment processing error:', paymentError);
+          throw new Error('Payment failed: ' + (paymentError.message || 'Unknown error. Please check you have sufficient USDC balance and gas fees.'));
+        }
 
         console.log('📊 Response status:', response.status, response.statusText);
-        console.log('📋 Response headers:', Object.fromEntries(response.headers.entries()));
+        const responseHeaders = Object.fromEntries(response.headers.entries());
+        console.log('📋 Response headers:', responseHeaders);
+        
+        // Check for transaction hash in X-PAYMENT-RESPONSE header
+        const paymentResponseHeader = response.headers.get('X-PAYMENT-RESPONSE');
+        console.log('💳 X-PAYMENT-RESPONSE header:', paymentResponseHeader);
         
         const data = await response.json();
         console.log('📦 Response data:', data);
         
-        if (response.ok) {
-          // Log payment info if available
-          if (data.payment) {
-            console.log('💰 Payment details:', {
-              txHash: data.payment.txHash,
-              from: data.payment.from,
-              amount: data.payment.amount,
-              currency: data.payment.currency
-            });
-            const txHashPreview = data.payment.txHash ? data.payment.txHash.substring(0, 20) : '';
-            status.innerHTML = '<p style="color: green;">✅ Payment successful!</p>' +
-              '<p style="font-size: 12px; color: #666;">TX: ' + txHashPreview + '...</p>' +
-              '<p>Check Discord for your summary.</p>';
-          } else {
-            status.innerHTML = '<p style="color: green;">✅ Payment successful! Check Discord for your summary.</p>';
+        // Extract transaction hash from various possible locations
+        let txHash = null;
+        let explorerUrl = null;
+        
+        if (paymentResponseHeader) {
+          try {
+            const paymentInfo = JSON.parse(paymentResponseHeader);
+            txHash = paymentInfo.txHash || paymentInfo.transactionHash || paymentInfo.hash;
+            console.log('💰 Payment info from header:', paymentInfo);
+          } catch (e) {
+            console.warn('⚠️ Could not parse X-PAYMENT-RESPONSE header:', e);
           }
+        }
+        
+        if (!txHash && data.payment) {
+          txHash = data.payment.txHash || data.payment.transactionHash || data.payment.hash;
+        }
+        
+        if (!txHash && data.txHash) {
+          txHash = data.txHash;
+        }
+        
+        if (!txHash && data.transactionHash) {
+          txHash = data.transactionHash;
+        }
+        
+        if (txHash) {
+          console.log('✅ Transaction hash found:', txHash);
+          explorerUrl = 'https://basescan.org/tx/' + txHash;
+          
+          status.innerHTML = '<p style="color: green;">✅ Payment successful!</p>' +
+            '<p style="font-size: 14px;"><a href="' + explorerUrl + '" target="_blank" style="color: #5865F2;">View Transaction on BaseScan</a></p>' +
+            '<p style="font-size: 12px; color: #666;">TX: ' + txHash.substring(0, 20) + '...</p>' +
+            '<p>Check Discord for your summary.</p>';
+        } else {
+          console.warn('⚠️ No transaction hash found in response');
+          status.innerHTML = '<p style="color: orange;">⚠️ Payment processed, but transaction hash not available.</p>' +
+            '<p>Check Discord for your summary.</p>';
+        }
+        
+        if (response.ok) {
           
           ${discordCallback ? 'fetch(\'/discord-callback\', {' +
             'method: \'POST\',' +
@@ -771,18 +810,30 @@ const server = Bun.serve({
           try {
             const result = await response.clone().json();
             
-            // POST to Discord callback endpoint
-            const callbackUrl = new URL("/discord-callback", url.origin);
-            await fetch(callbackUrl.toString(), {
+            // Create a new request for the Discord callback handler
+            // Use AGENT_URL or construct from current request origin
+            const serverHost = process.env.AGENT_URL ? new URL(process.env.AGENT_URL).origin : url.origin;
+            const callbackUrl = `${serverHost}/discord-callback`;
+            
+            console.log(`[discord] Triggering callback to: ${callbackUrl}`);
+            console.log(`[discord] Result keys:`, Object.keys(result || {}));
+            
+            const callbackResponse = await fetch(callbackUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 discord_token: decodeURIComponent(discordCallback),
                 result,
               }),
-            }).catch((err) => {
-              console.error("[discord] Failed to trigger callback:", err);
             });
+            
+            if (!callbackResponse.ok) {
+              const errorText = await callbackResponse.text();
+              console.error(`[discord] Callback failed: ${callbackResponse.status} ${errorText}`);
+              console.error(`[discord] Callback URL was: ${callbackUrl}`);
+            } else {
+              console.log(`[discord] Callback successful`);
+            }
           } catch (err) {
             console.error("[discord] Failed to parse entrypoint response:", err);
           }

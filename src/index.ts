@@ -674,36 +674,6 @@ const server = Bun.serve({
         // Log before the request to track when MetaMask should prompt
         console.log('⏳ Calling x402Fetch - MetaMask should prompt for transaction signature now...');
         
-        // Try to capture transaction hash from MetaMask events
-        let capturedTxHash = null;
-        
-        // Listen for MetaMask transaction events (if available)
-        if (walletProvider.on) {
-          const txListener = function(txHash) {
-            console.log('🔔 MetaMask transaction event:', txHash);
-            capturedTxHash = txHash;
-          };
-          
-          try {
-            walletProvider.on('transactionHash', txListener);
-            walletProvider.on('txhash', txListener);
-          } catch (e) {
-            console.warn('⚠️ Could not attach MetaMask event listeners:', e);
-          }
-        }
-        
-        // Get initial transaction count to detect new transactions
-        let initialTxCount = null;
-        try {
-          if (walletProvider.request) {
-            // This might not work, but worth trying
-            const blockNumber = await walletProvider.request({ method: 'eth_blockNumber' });
-            console.log('📦 Current block number:', parseInt(blockNumber, 16));
-          }
-        } catch (e) {
-          console.warn('⚠️ Could not get block number:', e);
-        }
-        
         let response;
         try {
           response = await x402Fetch(entrypointUrl, {
@@ -718,11 +688,6 @@ const server = Bun.serve({
             }),
           });
           console.log('✅ Payment request completed, response received');
-          
-          // Check if we captured a transaction hash from events
-          if (capturedTxHash) {
-            console.log('✅ Transaction hash captured from MetaMask events:', capturedTxHash);
-          }
         } catch (paymentError) {
           console.error('❌ Payment processing error:', paymentError);
           console.error('❌ Payment error details:', {
@@ -762,14 +727,10 @@ const server = Bun.serve({
         console.log('📦 Response data (full JSON):', JSON.stringify(data, null, 2));
         
         // Extract transaction hash from various possible locations
-        let txHash = capturedTxHash || null; // Start with captured hash from MetaMask events
+        let txHash = null;
         let explorerUrl = null;
         
-        if (txHash) {
-          console.log('✅ Using transaction hash from MetaMask events:', txHash);
-        }
-        
-        if (!txHash && paymentResponseHeader) {
+        if (paymentResponseHeader) {
           try {
             const paymentInfo = JSON.parse(paymentResponseHeader);
             txHash = paymentInfo.txHash || paymentInfo.transactionHash || paymentInfo.hash;
@@ -826,10 +787,8 @@ const server = Bun.serve({
             '<p>Check Discord for your summary.</p>';
         } else {
           console.warn('⚠️ No transaction hash found in response');
-          console.warn('💡 Note: x402 uses gasless transactions via facilitator. The transaction may be processed off-chain or asynchronously.');
-          status.innerHTML = '<p style="color: green;">✅ Payment processed successfully!</p>' +
-            '<p style="font-size: 12px; color: #666;">Note: Transaction hash not available (x402 processes payments via facilitator).</p>' +
-            '<p>Check Discord for your summary. You can verify the payment in MetaMask\'s activity history.</p>';
+          status.innerHTML = '<p style="color: orange;">⚠️ Payment processed, but transaction hash not available.</p>' +
+            '<p>Check Discord for your summary.</p>';
         }
         
         if (response.ok) {

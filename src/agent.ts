@@ -105,7 +105,7 @@ const discordSummaryFlow = flow<{
 }>()
   .node(
     "summarizer",
-    'conversation:string, timeWindow:string, channelLabel:string, lookbackMinutes?:number -> summary:string "You are a friendly Discord channel summarizer. Analyze the conversation and provide a cordial summary in bullet point format. Start with a brief greeting (e.g., \"Good morning!\", \"Hey there!\", etc.) based on the time of day, then say something like \"Here is what happened in the last X minutes:\" and provide bullet points covering: key conclusions reached, any opposition or disagreements, important highlights, and anything funny or notable. Messages with many emoji reactions (shown as \"emoji xN\" format, e.g., \"😀 x5\") are likely important or funny - prioritize these in your summary. Do NOT include timestamps in your summary. Be concise and friendly. Format as bullet points using \"•\" characters."'
+    'conversation:string, timeWindow:string, channelLabel:string, lookbackMinutes?:number -> summary:string "You are a friendly Discord channel summarizer. Analyze the conversation and provide a cordial summary in bullet point format. Start with a brief greeting based on the time of day, then say something like: Here is what happened in the last X minutes: and provide bullet points covering: key conclusions reached, any opposition or disagreements, important highlights, and anything funny or notable. Messages with many emoji reactions (shown as emoji xN format, e.g. 😀 x5) are likely important or funny - prioritize these in your summary. Do NOT include timestamps in your summary. Be concise and friendly. Format as bullet points using • characters."'
   )
   .node(
     "actionables",

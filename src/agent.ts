@@ -846,11 +846,13 @@ function normalizeSummaryBullets(
     .map((line) => transformLineToBullet(line, conversationEntries))
     .filter(Boolean);
 
-  if (!bullets.length) {
+  const filteredBullets = filterAndRankBullets(bullets);
+
+  if (!filteredBullets.length) {
     return (introLine + "\n" + bodyText).trim();
   }
 
-  return introLine + "\n" + bullets.join("\n");
+  return introLine + "\n" + filteredBullets.join("\n");
 }
 
 function transformLineToBullet(
@@ -890,6 +892,77 @@ function transformLineToBullet(
     : buildSentence(statement);
 
   return body ? "• " + body : "";
+}
+
+function filterAndRankBullets(bullets: string[]): string[] {
+  const scored = bullets.map((bullet) => ({
+    bullet,
+    score: scoreBullet(bullet),
+  }));
+
+  const retained = scored
+    .filter((item) => item.score >= 0)
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.bullet);
+
+  if (!retained.length && scored.length) {
+    return [scored.sort((a, b) => b.score - a.score)[0].bullet];
+  }
+
+  return retained;
+}
+
+function scoreBullet(bullet: string): number {
+  const text = bullet.replace(/^•\s*/, "").trim();
+  if (!text) return -5;
+
+  let score = 0;
+
+  const length = text.length;
+  if (length < 20) score -= 3;
+  if (length > 120) score -= 1;
+
+  if (/\b(action item|todo|need to|must|should|task|follow up|deadline|due)\b/i.test(text)) {
+    score += 4;
+  }
+
+  if (/\bplan|progress|status|update|launch|deploy|issue|fix|bug|release\b/i.test(text)) {
+    score += 3;
+  }
+
+  if (/\bconfirm|decided|agreed|resolved|concluded\b/i.test(text)) {
+    score += 3;
+  }
+
+  if (/\bquestion|asked|whether|how|when|what\b/i.test(text)) {
+    score += 1;
+  }
+
+  if (/\b\d+[smhdw]?\b/.test(text) || /\b\d{1,2}:\d{2}\b/.test(text)) {
+    score += 1;
+  }
+
+  if (/[A-Za-z].*[A-Za-z].*[A-Za-z]/.test(text)) {
+    score += 1;
+  }
+
+  if (/^\p{Emoji}+$/u.test(text)) {
+    score -= 5;
+  }
+
+  if (/^[A-Za-z]+\b/.test(text) && !/\s/.test(text) && text.length <= 6) {
+    score -= 4;
+  }
+
+  if (/\b(lol|haha|hehe|lmao|rofl|omg)\b/i.test(text)) {
+    score -= 4;
+  }
+
+  if (text.split(/\s+/).length <= 3) {
+    score -= 2;
+  }
+
+  return score;
 }
 
 function buildSentenceWithSpeaker(

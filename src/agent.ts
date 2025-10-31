@@ -94,6 +94,21 @@ const axClient = createAxLLMClient({
       }
     },
   },
+  provider:
+    process.env.AX_PROVIDER ?? process.env.AXLLM_PROVIDER ?? process.env.OPENAI_PROVIDER ?? undefined,
+  model:
+    process.env.AX_MODEL ?? process.env.AXLLM_MODEL ?? process.env.OPENAI_MODEL ?? undefined,
+  apiKey:
+    process.env.AX_API_KEY ?? process.env.AXLLM_API_KEY ?? process.env.OPENAI_API_KEY ?? undefined,
+  x402: {
+    ai: {
+      apiURL:
+        process.env.AX_API_URL ??
+        process.env.AXLLM_API_URL ??
+        process.env.OPENAI_API_URL ??
+        undefined,
+    },
+  },
 });
 
 if (!axClient.isConfigured()) {

@@ -752,6 +752,20 @@ async function fetchMessagesBetween({
     );
 
     for (const message of sortedBatch) {
+      if (page === 1) {
+        console.log(`[discord-summary-agent] message detail:`, {
+          id: message.id,
+          author: message.author?.username || message.author?.global_name,
+          type: message.type,
+          contentPreview: message.content?.substring(0, 100) || null,
+          hasEmbeds: Array.isArray(message.embeds) && message.embeds.length > 0,
+          embedDescriptions: Array.isArray(message.embeds)
+            ? message.embeds
+                .map((embed: any) => embed?.description?.substring(0, 100) || null)
+                .filter(Boolean)
+            : [],
+        });
+      }
       const timestamp = new Date(message.timestamp);
       if (timestamp < start) {
         after = message.id;

@@ -585,7 +585,7 @@ const server = Bun.serve({
                   });
                   console.log('✅ Successfully switched to Base network');
                   status.innerHTML = '<p>✅ Switched to Base network</p>';
-                } catch (switchError: any) {
+                } catch (switchError) {
                   // If the error is 4902, the chain is not added to MetaMask
                   if (switchError.code === 4902) {
                     console.log('⚠️ Base network not found in wallet. Adding...');
@@ -615,11 +615,11 @@ const server = Bun.serve({
               } else {
                 console.log('✅ Already on Base network');
               }
-            } catch (networkError: any) {
+            } catch (networkError) {
               console.error('❌ Network check error:', networkError);
               throw new Error('Network error: ' + (networkError.message || 'Please ensure you are on Base network'));
             }
-          } catch (connError: any) {
+          } catch (connError) {
             if (connError.code === 4001) {
               throw new Error('Wallet connection rejected. Please approve the connection to continue.');
             }

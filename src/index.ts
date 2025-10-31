@@ -653,7 +653,7 @@ const server = Bun.serve({
           asset: 'USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)',
           walletAddress: accountAddress,
           gasless: true, // Facilitator pays gas fees via EIP-3009
-          facilitator: 'https://facilitator.daydreams.systems'
+          facilitator: 'https://facilitator.x402.rs'
         });
         const x402Fetch = wrapFetchWithPayment(fetch, walletClient, BigInt(100000));
         console.log('✅ x402Fetch wrapper created');
@@ -743,7 +743,7 @@ const server = Bun.serve({
                 console.warn('⚠️ USDC balance did not decrease - transaction may not have processed');
                 console.warn('⚠️ This indicates the facilitator may not be processing the EIP-3009 permit');
                 console.warn('⚠️ Please check:');
-                console.warn('   1. Facilitator status: https://facilitator.daydreams.systems');
+                console.warn('   1. Facilitator status: https://facilitator.x402.rs');
                 console.warn('   2. Your wallet has sufficient USDC balance');
                 console.warn('   3. Network connection is stable');
                 
@@ -922,7 +922,7 @@ const server = Bun.serve({
           const currency = process.env.PAYMENT_CURRENCY || "USDC";
           
           // Get facilitator URL from config or env
-          const facilitatorUrl = process.env.FACILITATOR_URL || "https://facilitator.daydreams.systems";
+          const facilitatorUrl = process.env.FACILITATOR_URL || "https://facilitator.x402.rs";
           
           return Response.json(
             {

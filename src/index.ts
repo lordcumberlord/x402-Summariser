@@ -735,6 +735,16 @@ const server = Bun.serve({
                 console.log('⚠️ USDC balance decreased by', difference, '- transaction may be processing');
               } else {
                 console.warn('⚠️ USDC balance did not decrease - transaction may not have processed');
+                console.warn('⚠️ This indicates the facilitator may not be processing the EIP-3009 permit');
+                console.warn('⚠️ Please check:');
+                console.warn('   1. Facilitator status: https://facilitator.daydreams.systems');
+                console.warn('   2. Your wallet has sufficient USDC balance');
+                console.warn('   3. Network connection is stable');
+                
+                // Update UI to show the issue
+                status.innerHTML = '<p style="color: orange;">⚠️ Payment permit signed, but transaction not processed</p>' +
+                  '<p style="font-size: 12px; color: #666;">USDC balance did not decrease. The facilitator may not be processing the permit.</p>' +
+                  '<p style="font-size: 12px; color: #666;">Please check facilitator status or try again later.</p>';
               }
             } catch (balanceError) {
               console.warn('⚠️ Could not check USDC balance after payment:', balanceError);

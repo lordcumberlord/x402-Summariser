@@ -1009,10 +1009,22 @@ function buildSentenceWithSpeaker(
     return normalizedSpeaker + " shared an update.";
   }
 
+  const sanitizedClause = neutralizeFirstPersonPronouns(
+    stripDiscourseMarkers(clauseSource),
+    normalizedSpeaker
+  )
+    .replace(/\s*[–—-]\s*/g, " ")
+    .replace(/\s+,/g, ",")
+    .trim();
+
+  if (!sanitizedClause) {
+    return normalizedSpeaker + " shared an update.";
+  }
+
   if (/[?？]$/.test(clauseSource)) {
     return rewriteQuestionBullet(
       normalizedSpeaker,
-      clauseSource,
+      sanitizedClause,
       conversationEntries
     );
   }

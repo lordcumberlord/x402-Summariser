@@ -920,7 +920,7 @@ const server = Bun.serve({
           
           return Response.json(
             {
-              x402Version: "1.0",
+              x402Version: 1.0,
               accepts: [
                 {
                   scheme: "exact",

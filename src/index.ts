@@ -5,6 +5,11 @@ const port = Number(process.env.PORT ?? 8787);
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const DISCORD_API_DEFAULT_BASE = "https://discord.com/api/v10";
 
+// Payment constants
+const USDC_DECIMALS = 6;
+const DEFAULT_PRICE_USDC = BigInt(100000); // 0.10 USDC (100000 / 10^6)
+const PAYMENT_CALLBACK_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
+
 // Store Discord webhook info temporarily for payment callbacks
 // Map: interaction_token -> { application_id, channel_id, guild_id, lookbackMinutes }
 const pendingDiscordCallbacks = new Map<string, {
@@ -101,49 +106,40 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
       return Response.json({ type: 1 });
     }
 
-  // Handle APPLICATION_COMMAND
-  if (interaction.type === 2) {
-    const { name, options } = interaction.data || {};
-    // channel_id and guild_id are at the interaction level, not in data
-    const channel_id = interaction.channel_id || interaction.channel?.id;
-    const guild_id = interaction.guild_id || interaction.guild?.id;
+    // Handle APPLICATION_COMMAND
+    if (interaction.type === 2) {
+      const { name, options } = interaction.data || {};
+      // channel_id and guild_id are at the interaction level, not in data
+      const channel_id = interaction.channel_id || interaction.channel?.id;
+      const guild_id = interaction.guild_id || interaction.guild?.id;
 
-    if (name === "summarise") {
-      // Get lookback minutes from options (default: 60)
-      const lookbackOption = options?.find((opt: any) => opt.name === "minutes");
-      const lookbackMinutes = lookbackOption?.value ?? 60;
-      
-      // Debug: log interaction structure
-      console.log(`[discord] Interaction structure:`, JSON.stringify({
-        channel_id: interaction.channel_id,
-        channel: interaction.channel,
-        guild_id: interaction.guild_id,
-        guild: interaction.guild,
-        data: interaction.data,
-      }, null, 2));
+      if (name === "summarise") {
+        // Get lookback minutes from options (default: 60)
+        const lookbackOption = options?.find((opt: any) => opt.name === "minutes");
+        const lookbackMinutes = lookbackOption?.value ?? 60;
 
-      // Validate required fields
-      if (!channel_id) {
-        console.error(`[discord] Missing channel_id in interaction:`, JSON.stringify(interaction, null, 2));
-        const followupUrl = `${process.env.DISCORD_API_BASE_URL ?? DISCORD_API_DEFAULT_BASE}/webhooks/${interaction.application_id}/${interaction.token}`;
-        await fetch(followupUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            content: "❌ Error: Could not determine channel ID from interaction.",
-          }),
+        // Validate required fields
+        if (!channel_id) {
+          console.error(`[discord] Missing channel_id in interaction:`, JSON.stringify(interaction, null, 2));
+          const followupUrl = `${process.env.DISCORD_API_BASE_URL ?? DISCORD_API_DEFAULT_BASE}/webhooks/${interaction.application_id}/${interaction.token}`;
+          await fetch(followupUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              content: "❌ Error: Could not determine channel ID from interaction.",
+            }),
+          });
+          return Response.json({ error: "Missing channel_id" }, { status: 400 });
+        }
+
+        // Respond immediately with "thinking"
+        const initialResponse = Response.json({
+          type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
         });
-        return Response.json({ error: "Missing channel_id" }, { status: 400 });
-      }
 
-      // Respond immediately with "thinking"
-      const initialResponse = Response.json({
-        type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
-      });
-
-      // Process in background - route through x402 payment-enabled entrypoint
-      (async () => {
-        try {
+        // Process in background - route through x402 payment-enabled entrypoint
+        (async () => {
+          try {
           console.log(`[discord] Processing summarise command: channel=${channel_id}, guild=${guild_id}, minutes=${lookbackMinutes}`);
           
           const baseUrl =
@@ -213,13 +209,13 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
           }
 
           if (requiresPayment) {
-            // Store Discord webhook info for callback (expires in 1 hour)
+            // Store Discord webhook info for callback
             pendingDiscordCallbacks.set(interaction.token, {
               applicationId: interaction.application_id,
               channelId: channel_id,
               guildId: guild_id,
               lookbackMinutes,
-              expiresAt: Date.now() + 60 * 60 * 1000, // 1 hour
+              expiresAt: Date.now() + PAYMENT_CALLBACK_EXPIRY_MS,
             });
 
             // Send payment instructions to Discord user
@@ -304,11 +300,11 @@ After payment, your summary will appear here automatically.`;
             console.error(`[discord] Failed to send error response:`, fetchError);
           }
         }
-      })();
+        })();
 
-      return initialResponse;
+        return initialResponse;
+      }
     }
-  }
 
     return Response.json({ error: "Unknown interaction type" }, { status: 400 });
   } catch (error: any) {
@@ -322,7 +318,6 @@ After payment, your summary will appear here automatically.`;
 
 // Handle Discord callback after payment
 async function handleDiscordCallback(req: Request): Promise<Response> {
-  console.log(`[discord-callback] Handler called`);
   try {
     const body = await req.json();
     const { discord_token, result } = body;
@@ -333,13 +328,10 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
 
     // Decode the token (it was URL-encoded when passed in the payment URL)
     const decodedToken = decodeURIComponent(discord_token);
-    console.log(`[discord-callback] Looking up token: ${decodedToken.substring(0, 20)}...`);
-    console.log(`[discord-callback] Pending callbacks count: ${pendingDiscordCallbacks.size}`);
-    console.log(`[discord-callback] Available tokens:`, Array.from(pendingDiscordCallbacks.keys()).map(k => k.substring(0, 20) + '...'));
     
     const callbackData = pendingDiscordCallbacks.get(decodedToken);
     if (!callbackData) {
-      console.error(`[discord-callback] Token not found in pending callbacks. Token: ${decodedToken.substring(0, 30)}...`);
+      console.error(`[discord-callback] Token not found or expired: ${decodedToken.substring(0, 30)}...`);
       return Response.json({ error: "Invalid or expired callback token" }, { status: 404 });
     }
 
@@ -378,9 +370,6 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
     }
     
     // Log payment verification info if available
-    // x402 payments should include payment metadata in the response
-    console.log(`[payment] Payment callback received for token: ${decodedToken.substring(0, 20)}...`);
-    console.log(`[payment] Result keys:`, Object.keys(result || {}));
     if (result?.payment || result?.x402Payment || result?.paymentTx) {
       const paymentInfo = result?.payment || result?.x402Payment || result?.paymentTx;
       console.log(`[payment] Payment verified:`, {
@@ -389,8 +378,6 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
         amount: paymentInfo.amount || paymentInfo.value,
         currency: paymentInfo.currency || paymentInfo.token || "USDC"
       });
-    } else {
-      console.log(`[payment] No payment metadata found in result. Full result:`, JSON.stringify(result, null, 2).substring(0, 500));
     }
 
     const followupResponse = await fetch(followupUrl, {
@@ -564,8 +551,7 @@ const server = Bun.serve({
         }
         
         // Wrap fetch with payment handling (pass wallet provider directly, not a signer)
-        // maxValue: 0.10 USDC = 100000 (6 decimals)
-        const x402Fetch = wrapFetchWithPayment(fetch, walletProvider, BigInt(100000));
+        const x402Fetch = wrapFetchWithPayment(fetch, walletProvider, DEFAULT_PRICE_USDC);
         
         const entrypointUrl = '${entrypointUrl}';
         console.log('📞 Calling entrypoint:', entrypointUrl);
@@ -595,28 +581,30 @@ const server = Bun.serve({
               amount: data.payment.amount,
               currency: data.payment.currency
             });
-            status.innerHTML = \`<p style="color: green;">✅ Payment successful!</p>
-              <p style="font-size: 12px; color: #666;">TX: \${data.payment.txHash?.substring(0, 20)}...</p>
-              <p>Check Discord for your summary.</p>\`;
+            const txHashPreview = data.payment.txHash ? data.payment.txHash.substring(0, 20) : '';
+            status.innerHTML = '<p style="color: green;">✅ Payment successful!</p>' +
+              '<p style="font-size: 12px; color: #666;">TX: ' + txHashPreview + '...</p>' +
+              '<p>Check Discord for your summary.</p>';
           } else {
             status.innerHTML = '<p style="color: green;">✅ Payment successful! Check Discord for your summary.</p>';
           }
           
-          ${discordCallback ? `fetch('/discord-callback', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              discord_token: '${discordCallback}',
-              result: data,
-            }),
-          }).catch(err => {
-            console.error('❌ Callback error:', err);
-            status.innerHTML += '<p style="color: orange;">⚠️ Payment successful but failed to send to Discord. Please contact support.</p>';
-          });` : ''}
+          ${discordCallback ? 'fetch(\'/discord-callback\', {' +
+            'method: \'POST\',' +
+            'headers: { \'Content-Type\': \'application/json\' },' +
+            'body: JSON.stringify({' +
+            'discord_token: \'' + discordCallback + '\',' +
+            'result: data' +
+            '})' +
+            '}).catch(function(err) {' +
+            'console.error(\'❌ Callback error:\', err);' +
+            'status.innerHTML += \'<p style="color: orange;">⚠️ Payment successful but failed to send to Discord. Please contact support.</p>\';' +
+            '});' : ''}
         } else if (response.status === 402) {
           status.innerHTML = '<p style="color: orange;">💳 Payment required. Please connect your x402 wallet and approve the transaction.</p>';
         } else {
-          status.innerHTML = '<p style="color: red;">❌ Error: ' + (data.error?.message || JSON.stringify(data)) + '</p>';
+          const errorMsg = data.error ? (data.error.message || JSON.stringify(data)) : JSON.stringify(data);
+          status.innerHTML = '<p style="color: red;">❌ Error: ' + errorMsg + '</p>';
         }
       } catch (error) {
         console.error('❌ Payment error:', error);

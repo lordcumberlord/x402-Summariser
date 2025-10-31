@@ -495,7 +495,7 @@ const server = Bun.serve({
   </script>
   <script type="module">
     let wrapFetchWithPayment;
-    let createSigner;
+    let moduleLoaded = false;
     
     // Load x402-fetch using import map (esm.sh with bundle flag handles dependencies)
     (async () => {
@@ -503,12 +503,12 @@ const server = Bun.serve({
         console.log('Loading x402-fetch via esm.sh (bundled)...');
         const module = await import('x402-fetch');
         wrapFetchWithPayment = module.wrapFetchWithPayment;
-        createSigner = module.createSigner;
         
-        if (wrapFetchWithPayment && createSigner) {
+        if (wrapFetchWithPayment) {
           console.log('✅ x402-fetch loaded successfully');
+          moduleLoaded = true;
         } else {
-          console.error('❌ wrapFetchWithPayment or createSigner not found. Available exports:', Object.keys(module));
+          console.error('❌ wrapFetchWithPayment not found. Available exports:', Object.keys(module));
         }
       } catch (importError) {
         console.error('❌ Failed to import x402-fetch:', importError);
@@ -519,8 +519,14 @@ const server = Bun.serve({
     async function pay() {
       const status = document.getElementById('status');
       
-      if (!wrapFetchWithPayment || !createSigner) {
-        status.innerHTML = '<p style="color: red;">⚠️ Error: Could not load x402 payment library.</p><p style="font-size: 12px; color: #666;">Please check your browser console for details. Make sure you have an x402 wallet browser extension installed.</p>';
+      // Wait a bit for module to load if it hasn't yet
+      if (!moduleLoaded && !wrapFetchWithPayment) {
+        status.innerHTML = '<p>⏳ Loading payment library...</p>';
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      if (!wrapFetchWithPayment) {
+        status.innerHTML = '<p style="color: red;">⚠️ Error: Could not load x402 payment library.</p><p style="font-size: 12px; color: #666;">Please refresh the page and try again.</p>';
         console.error('❌ x402-fetch is not available');
         return;
       }
@@ -533,12 +539,25 @@ const server = Bun.serve({
           throw new Error('No wallet found. Please install MetaMask or an x402-compatible wallet extension.');
         }
         
-        // Create signer from wallet
-        const walletClient = window.ethereum || window.x402;
-        const signer = await createSigner(walletClient);
+        // Get wallet provider
+        const walletProvider = window.ethereum || window.x402;
         
-        // Wrap fetch with payment handling
-        const x402Fetch = wrapFetchWithPayment(fetch, signer);
+        // Request wallet connection (required for MetaMask)
+        if (walletProvider.request) {
+          try {
+            await walletProvider.request({ method: 'eth_requestAccounts' });
+            console.log('✅ Wallet connected');
+          } catch (connError) {
+            if (connError.code === 4001) {
+              throw new Error('Wallet connection rejected. Please approve the connection to continue.');
+            }
+            throw connError;
+          }
+        }
+        
+        // Wrap fetch with payment handling (pass wallet provider directly, not a signer)
+        // maxValue: 0.10 USDC = 100000 (6 decimals)
+        const x402Fetch = wrapFetchWithPayment(fetch, walletProvider, BigInt(100000));
         
         const entrypointUrl = '${entrypointUrl}';
         console.log('📞 Calling entrypoint:', entrypointUrl);

@@ -487,34 +487,34 @@ const server = Bun.serve({
     let x402Fetch;
     
     // Try to load x402-fetch from CDN with error handling
+    // Based on package.json: ESM module is at dist/esm/index.mjs
     (async () => {
-      try {
-        const module = await import('https://cdn.jsdelivr.net/npm/x402-fetch@0.7.0/+esm');
-        x402Fetch = module.x402Fetch || module.default?.x402Fetch || module.default;
-        
-        if (!x402Fetch) {
-          console.warn('x402Fetch not found, trying alternative CDN...');
-          const module2 = await import('https://unpkg.com/x402-fetch@0.7.0/dist/index.esm.js');
-          x402Fetch = module2.x402Fetch || module2.default?.x402Fetch || module2.default;
-        }
-        
-        if (x402Fetch) {
-          console.log('✅ x402-fetch loaded successfully');
-        } else {
-          console.error('❌ Failed to load x402-fetch from any CDN');
-        }
-      } catch (importError) {
-        console.error('❌ Failed to import x402-fetch:', importError);
-        // Try alternative CDN
+      const cdnUrls = [
+        'https://unpkg.com/x402-fetch@0.7.0/dist/esm/index.mjs',
+        'https://cdn.jsdelivr.net/npm/x402-fetch@0.7.0/dist/esm/index.mjs',
+        'https://esm.sh/x402-fetch@0.7.0',
+      ];
+      
+      for (const url of cdnUrls) {
         try {
-          const module2 = await import('https://unpkg.com/x402-fetch@0.7.0/dist/index.esm.js');
-          x402Fetch = module2.x402Fetch || module2.default?.x402Fetch || module2.default;
+          console.log(\`Trying to load x402-fetch from: \${url}\`);
+          const module = await import(url);
+          x402Fetch = module.x402Fetch || module.default?.x402Fetch || module.default;
+          
           if (x402Fetch) {
-            console.log('✅ x402-fetch loaded from alternative CDN');
+            console.log(\`✅ x402-fetch loaded successfully from: \${url}\`);
+            break;
+          } else {
+            console.warn(\`⚠️ Module loaded but x402Fetch not found. Module keys:\`, Object.keys(module));
           }
-        } catch (importError2) {
-          console.error('❌ Failed to import x402-fetch from unpkg:', importError2);
+        } catch (importError) {
+          console.warn(\`❌ Failed to import from \${url}:\`, importError.message);
+          continue;
         }
+      }
+      
+      if (!x402Fetch) {
+        console.error('❌ Failed to load x402-fetch from any CDN. You may need to install an x402 wallet browser extension.');
       }
     })();
     

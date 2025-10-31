@@ -355,13 +355,20 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
       .replace(/To summarise this channel, please pay.*?via x402\./gi, "")
       .trim();
     
+    // Remove timestamps if they somehow got through
+    summary = summary
+      .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "") // ISO timestamps
+      .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
+      .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
+      .trim();
+    
     // If summary is empty or too short after filtering, use original
     if (!summary || summary.length < 10) {
       summary = output?.summary || "Summary generated successfully.";
     }
     
     let content = `✅ **Payment Confirmed**\n\n`;
-    content += `**Summary**\n${summary}\n\n`;
+    content += `${summary}\n\n`;
     
     if (output?.actionables && output.actionables.length > 0) {
       content += `**Action Items**\n${output.actionables.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}`;

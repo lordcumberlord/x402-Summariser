@@ -90,10 +90,11 @@ const discordSummaryFlow = flow<{
   conversation: string;
   timeWindow: string;
   channelLabel: string;
+  lookbackMinutes?: number;
 }>()
   .node(
     "summarizer",
-    'conversation:string, timeWindow:string, channelLabel:string -> summary:string "You are a professional meeting scribe. Produce a concise narrative summary (3-5 sentences) of the Discord discussion that took place in the specified channel and time window. Highlight key themes, decisions, blockers, and sentiment."'
+    'conversation:string, timeWindow:string, channelLabel:string, lookbackMinutes?:number -> summary:string "You are a friendly Discord channel summarizer. Analyze the conversation and provide a cordial summary in bullet point format. Start with a brief greeting (e.g., \"Good morning!\", \"Hey there!\", etc.) based on the time of day, then say something like \"Here is what happened in the last X minutes:\" and provide bullet points covering: key conclusions reached, any opposition or disagreements, important highlights, and anything funny or notable (pay attention to messages that likely received many emoji reactions). Do NOT include timestamps in your summary. Be concise and friendly. Format as bullet points using \"•\" characters."'
   )
   .node(
     "actionables",
@@ -103,6 +104,7 @@ const discordSummaryFlow = flow<{
     conversation: state.conversation,
     timeWindow: state.timeWindow,
     channelLabel: state.channelLabel,
+    lookbackMinutes: state.lookbackMinutes,
   }))
   .execute("actionables", (state) => ({
     conversation: state.conversation,
@@ -370,14 +372,25 @@ addEntrypoint({
       conversation,
       timeWindow,
       channelLabel,
+      lookbackMinutes: lookbackMinutes,
     });
 
     const usageEntry = discordSummaryFlow.getUsage().at(-1);
     discordSummaryFlow.resetUsage();
 
+    // Clean up summary: remove timestamps and payment-related content
+    let summary = result.summary ?? "";
+    
+    // Remove timestamps in various formats
+    summary = summary
+      .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "") // ISO timestamps
+      .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
+      .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
+      .trim();
+
     return {
       output: {
-        summary: result.summary ?? "",
+        summary: summary || "Summary generated successfully.",
         actionables: Array.isArray(result.actionables)
           ? result.actionables
           : [],
@@ -559,14 +572,25 @@ export async function executeSummariseChat(input: {
       conversation,
       timeWindow,
       channelLabel,
+      lookbackMinutes: lookbackMinutes,
     });
 
     const result = await Promise.race([flowPromise, timeoutPromise]) as typeof flowPromise extends Promise<infer T> ? T : never;
 
     discordSummaryFlow.resetUsage();
 
+    // Clean up summary: remove timestamps and payment-related content
+    let summary = result.summary ?? "";
+    
+    // Remove timestamps in various formats
+    summary = summary
+      .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "") // ISO timestamps
+      .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
+      .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
+      .trim();
+
     return {
-      summary: result.summary ?? "",
+      summary: summary || "Summary generated successfully.",
       actionables: Array.isArray(result.actionables)
         ? (result.actionables as string[])
         : [],

@@ -406,42 +406,70 @@ addEntrypoint({
       };
     }
 
-    const result = await discordSummaryFlow.forward(llm, {
-      conversation,
-      timeWindow,
-      channelLabel,
-      lookbackMinutes: lookbackMinutes,
-    });
+    try {
+      const result = await discordSummaryFlow.forward(llm, {
+        conversation,
+        timeWindow,
+        channelLabel,
+        lookbackMinutes: lookbackMinutes,
+      });
 
-    const usageEntry = discordSummaryFlow.getUsage().at(-1);
-    discordSummaryFlow.resetUsage();
+      const usageEntry = discordSummaryFlow.getUsage().at(-1);
+      discordSummaryFlow.resetUsage();
 
-    // Clean up summary: remove timestamps and payment-related content
-    let summary = result.summary ?? "";
-    
-    // Remove timestamps in various formats
-    summary = summary
-      .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "") // ISO timestamps
-      .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
-      .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
-      .trim();
+      // Clean up summary: remove timestamps and payment-related content
+      let summary = result.summary ?? "";
+      
+      // Remove timestamps in various formats
+      summary = summary
+        .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "") // ISO timestamps
+        .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
+        .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
+        .trim();
 
-    summary = finalizeSummary(
-      summary,
-      lookbackMinutes,
-      rangeLabel,
-      conversationEntries
-    );
+      summary = finalizeSummary(
+        summary,
+        lookbackMinutes,
+        rangeLabel,
+        conversationEntries
+      );
 
-    return {
-      output: {
-        summary: summary || "Summary generated successfully.",
-        actionables: Array.isArray(result.actionables)
-          ? result.actionables
-          : [],
-      },
-      model: usageEntry?.model,
-    };
+      return {
+        output: {
+          summary: summary || "Summary generated successfully.",
+          actionables: Array.isArray(result.actionables)
+            ? (result.actionables as string[])
+            : [],
+        },
+        model: usageEntry?.model,
+      };
+    } catch (error: any) {
+      console.error("[discord-summary-agent] LLM flow error:", error);
+      discordSummaryFlow.resetUsage();
+
+      const fallbackSummary = conversation
+        .split("\n")
+        .slice(0, 5)
+        .join("\n")
+        .trim();
+
+      const fallbackText =
+        fallbackSummary ||
+        `Messages retrieved (${rangeLabel}), but failed to generate AI summary: ${error?.message || String(error)}`;
+
+      return {
+        output: {
+          summary: finalizeSummary(
+            fallbackText,
+            lookbackMinutes,
+            rangeLabel,
+            conversationEntries
+          ),
+          actionables: [],
+        },
+        model: "axllm-fallback",
+      };
+    }
   },
 });
 

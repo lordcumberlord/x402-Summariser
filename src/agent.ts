@@ -39,6 +39,11 @@ type DiscordMessage = {
   reactions?: DiscordReaction[];
 };
 
+type ConversationEntry = {
+  speaker: string;
+  content: string;
+};
+
 type DiscordChannelInfo = {
   id: string;
   name?: string;
@@ -370,6 +375,7 @@ addEntrypoint({
     }
 
     const conversation = formatConversation(messages);
+    const conversationEntries = extractConversationEntries(conversation);
     console.log(`[discord-summary-agent] Formatted conversation preview (first 500 chars):`, conversation.substring(0, 500));
     
     const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
@@ -388,7 +394,12 @@ addEntrypoint({
 
       return {
         output: {
-          summary: finalizeSummary(fallbackText, lookbackMinutes, rangeLabel),
+          summary: finalizeSummary(
+            fallbackText,
+            lookbackMinutes,
+            rangeLabel,
+            conversationEntries
+          ),
           actionables: [],
         },
         model: "axllm-fallback",
@@ -415,7 +426,12 @@ addEntrypoint({
       .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
       .trim();
 
-    summary = finalizeSummary(summary, lookbackMinutes, rangeLabel);
+    summary = finalizeSummary(
+      summary,
+      lookbackMinutes,
+      rangeLabel,
+      conversationEntries
+    );
 
     return {
       output: {
@@ -573,6 +589,7 @@ export async function executeSummariseChat(input: {
   }
 
   const conversation = formatConversation(messages);
+  const conversationEntries = extractConversationEntries(conversation);
   const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
 
   const llm = axClient.ax;
@@ -588,7 +605,12 @@ export async function executeSummariseChat(input: {
       `Messages retrieved (${rangeLabel}), but AxFlow is not configured to generate a summary.`;
 
     return {
-      summary: finalizeSummary(fallbackText, lookbackMinutes, rangeLabel),
+      summary: finalizeSummary(
+        fallbackText,
+        lookbackMinutes,
+        rangeLabel,
+        conversationEntries
+      ),
       actionables: [],
     };
   }
@@ -620,7 +642,12 @@ export async function executeSummariseChat(input: {
       .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
       .trim();
 
-    const finalSummary = finalizeSummary(summary, lookbackMinutes, rangeLabel);
+    const finalSummary = finalizeSummary(
+      summary,
+      lookbackMinutes,
+      rangeLabel,
+      conversationEntries
+    );
 
     return {
       summary: finalSummary || "Summary generated successfully.",
@@ -642,7 +669,12 @@ export async function executeSummariseChat(input: {
       `Messages retrieved (${rangeLabel}), but failed to generate AI summary: ${error.message}`;
 
     return {
-      summary: finalizeSummary(fallbackText, lookbackMinutes, rangeLabel),
+      summary: finalizeSummary(
+        fallbackText,
+        lookbackMinutes,
+        rangeLabel,
+        conversationEntries
+      ),
       actionables: [],
     };
   }
@@ -696,6 +728,22 @@ function formatConversation(messages: DiscordMessage[]): string {
       return `${author}: ${content || "(no text content)"}`;
     })
     .join("\n");
+}
+
+function extractConversationEntries(conversation: string): ConversationEntry[] {
+  return conversation
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const idx = line.indexOf(":");
+      if (idx === -1) {
+        return { speaker: "Unknown", content: line };
+      }
+      const speaker = line.slice(0, idx).trim();
+      const content = line.slice(idx + 1).trim();
+      return { speaker, content };
+    });
 }
 
 function ensureGreeting(
@@ -755,13 +803,17 @@ function timeBasedGreeting(now: Date): string {
 function finalizeSummary(
   rawSummary: string,
   lookbackMinutes?: number,
-  rangeLabel?: string
+  rangeLabel?: string,
+  conversationEntries: ConversationEntry[] = []
 ): string {
   const withGreeting = ensureGreeting(rawSummary, lookbackMinutes, rangeLabel);
-  return normalizeSummaryBullets(withGreeting);
+  return normalizeSummaryBullets(withGreeting, conversationEntries);
 }
 
-function normalizeSummaryBullets(summary: string): string {
+function normalizeSummaryBullets(
+  summary: string,
+  conversationEntries: ConversationEntry[]
+): string {
   const trimmed = summary.trim();
   if (!trimmed) {
     return trimmed;
@@ -791,7 +843,7 @@ function normalizeSummaryBullets(summary: string): string {
     .filter(Boolean);
 
   const bullets = bulletSources
-    .map(transformLineToBullet)
+    .map((line) => transformLineToBullet(line, conversationEntries))
     .filter(Boolean);
 
   if (!bullets.length) {
@@ -801,7 +853,10 @@ function normalizeSummaryBullets(summary: string): string {
   return introLine + "\n" + bullets.join("\n");
 }
 
-function transformLineToBullet(line: string): string {
+function transformLineToBullet(
+  line: string,
+  conversationEntries: ConversationEntry[]
+): string {
   let text = line.trim();
   if (!text) {
     return "";
@@ -831,13 +886,17 @@ function transformLineToBullet(line: string): string {
   }
 
   const body = speaker
-    ? buildSentenceWithSpeaker(speaker, statement)
+    ? buildSentenceWithSpeaker(speaker, statement, conversationEntries)
     : buildSentence(statement);
 
   return body ? "• " + body : "";
 }
 
-function buildSentenceWithSpeaker(speaker: string, statement: string): string {
+function buildSentenceWithSpeaker(
+  speaker: string,
+  statement: string,
+  conversationEntries: ConversationEntry[]
+): string {
   const normalizedSpeaker = capitalizeWords(speaker);
   const cleaned = statement.replace(/\s+/g, " ").trim();
 
@@ -857,14 +916,14 @@ function buildSentenceWithSpeaker(speaker: string, statement: string): string {
   }
 
   if (/[?？]$/.test(clauseSource)) {
-    const core = clauseSource.replace(/[?？]+$/, "").trim();
-    const clause = lowercaseFirst(core);
-    return normalizedSpeaker + " asked " + clause + "?";
+    return rewriteQuestionBullet(
+      normalizedSpeaker,
+      clauseSource,
+      conversationEntries
+    );
   }
 
-  const clause = lowercaseFirst(clauseSource);
-  const punctuation = /[.!?]$/.test(clause) ? "" : ".";
-  return normalizedSpeaker + " " + clause + punctuation;
+  return rewriteStatementBullet(normalizedSpeaker, clauseSource);
 }
 
 function buildSentence(statement: string): string {
@@ -881,6 +940,297 @@ function buildSentence(statement: string): string {
   const sentence = capitalizeFirst(cleaned);
   const punctuation = /[.!?]$/.test(sentence) ? "" : ".";
   return sentence + punctuation;
+}
+
+type QuestionParseResult = {
+  questionWord: string;
+  remainder: string;
+  targetName?: string;
+  original: string;
+};
+
+function rewriteQuestionBullet(
+  speaker: string,
+  rawQuestion: string,
+  conversationEntries: ConversationEntry[]
+): string {
+  const parsed = parseQuestion(rawQuestion);
+  const answerSentence = detectAnswerSentence(
+    speaker,
+    parsed,
+    conversationEntries
+  );
+
+  if (answerSentence) {
+    return answerSentence;
+  }
+
+  return buildAskedSentence(speaker, parsed);
+}
+
+function rewriteStatementBullet(
+  speaker: string,
+  clauseSource: string
+): string {
+  let clause = clauseSource.trim();
+
+  if (!clause) {
+    return speaker + " shared an update.";
+  }
+
+  if (/^i\b/i.test(clause)) {
+    clause = clause.replace(/^i\b/i, speaker);
+    return ensurePeriod(capitalizeFirst(clause));
+  }
+
+  const firstWordMatch = clause.match(/^([A-Z][A-Za-z0-9']*)\b/);
+  if (
+    firstWordMatch &&
+    firstWordMatch[1].toLowerCase() !== speaker.toLowerCase()
+  ) {
+    return ensurePeriod(capitalizeFirst(clause));
+  }
+
+  const normalized = lowercaseFirst(clause);
+  return ensurePeriod(`${speaker} ${normalized}`);
+}
+
+function parseQuestion(question: string): QuestionParseResult {
+  const trimmed = question.replace(/[?？]+$/, "").trim();
+
+  let working = trimmed;
+  let targetName: string | undefined;
+  const commaMatch = working.match(/,\s*(?:lord\s+)?([A-Z][A-Za-z0-9']*(?:\s+[A-Z][A-Za-z0-9']*)*)$/i);
+  if (commaMatch) {
+    targetName = commaMatch[1].trim();
+    working = working.slice(0, commaMatch.index).trim();
+  }
+
+  const tokens = working.split(/\s+/);
+  const questionWord = tokens[0]?.toLowerCase() ?? "";
+  const remainder = working.slice(tokens[0]?.length ?? 0).trim();
+
+  return {
+    questionWord,
+    remainder,
+    targetName,
+    original: trimmed,
+  };
+}
+
+function buildAskedSentence(
+  speaker: string,
+  parsed: QuestionParseResult
+): string {
+  const target = parsed.targetName
+    ? capitalizeWords(parsed.targetName)
+    : undefined;
+  const remainder = parsed.remainder.trim();
+
+  if (!remainder) {
+    return speaker + " asked a question.";
+  }
+
+  if (isYesNoQuestion(parsed.questionWord)) {
+    const clause = lowercaseFirst(remainder);
+    const targetClause = target ? `${target} whether ${clause}` : `whether ${clause}`;
+    return ensurePeriod(`${speaker} asked ${targetClause}`);
+  }
+
+  if (parsed.questionWord === "how") {
+    const topic = normalizeHowTopic(remainder);
+    const targetClause = target ? `${target} about ${topic}` : `about ${topic}`;
+    return ensurePeriod(`${speaker} asked ${targetClause}`);
+  }
+
+  const questionWord = parsed.questionWord || "what";
+  const clause = lowercaseFirst(remainder);
+  const targetClause = target ? `${target} ${questionWord} ${clause}` : `${questionWord} ${clause}`;
+  return ensurePeriod(`${speaker} asked ${targetClause}`);
+}
+
+function detectAnswerSentence(
+  asker: string,
+  parsed: QuestionParseResult,
+  conversationEntries: ConversationEntry[]
+): string | null {
+  const questionIndex = findConversationEntryIndex(
+    conversationEntries,
+    asker,
+    parsed.original
+  );
+
+  if (questionIndex === -1) {
+    return null;
+  }
+
+  const targetNormalized = parsed.targetName
+    ? normalizeName(parsed.targetName)
+    : undefined;
+
+  for (let i = questionIndex + 1; i < Math.min(questionIndex + 6, conversationEntries.length); i++) {
+    const entry = conversationEntries[i];
+    if (!entry.content) continue;
+
+    if (
+      targetNormalized &&
+      normalizeName(entry.speaker) !== targetNormalized
+    ) {
+      continue;
+    }
+
+    const tone = classifyAnswerTone(entry.content);
+    if (!tone) {
+      continue;
+    }
+
+    const responder = capitalizeWords(entry.speaker);
+    const statement = buildAnswerStatement(parsed, tone);
+
+    if (!statement) {
+      continue;
+    }
+
+    const verb = tone === "positive" ? "confirmed" : "reported";
+    return ensurePeriod(`${responder} ${verb} that ${statement}`);
+  }
+
+  return null;
+}
+
+type AnswerTone = "positive" | "negative";
+
+function buildAnswerStatement(
+  parsed: QuestionParseResult,
+  tone: AnswerTone
+): string {
+  const remainder = parsed.remainder.trim();
+  if (!remainder) {
+    return "";
+  }
+
+  if (isYesNoQuestion(parsed.questionWord)) {
+    return buildYesNoAnswerStatement(parsed.questionWord, remainder, tone);
+  }
+
+  return lowercaseFirst(remainder);
+}
+
+function buildYesNoAnswerStatement(
+  questionWord: string,
+  remainder: string,
+  tone: AnswerTone
+): string {
+  let clause = remainder.trim();
+  clause = clause.replace(/^[,\s]+/, "");
+
+  if (/^we\s+/i.test(clause)) {
+    const rest = clause.slice(3).trim();
+    if (questionWord === "have") {
+      clause = tone === "positive"
+        ? `we have ${rest}`
+        : `we have not ${rest}`;
+    } else if (questionWord === "did") {
+      clause = tone === "positive"
+        ? `we ${rest}`
+        : `we did not ${rest}`;
+    } else if (questionWord === "are") {
+      clause = tone === "positive"
+        ? `we are ${rest}`
+        : `we are not ${rest}`;
+    } else {
+      clause = tone === "positive"
+        ? `we ${rest}`
+        : `we do not ${rest}`;
+    }
+  } else {
+    clause = tone === "positive"
+      ? clause
+      : `not ${clause}`;
+  }
+
+  return lowercaseFirst(clause);
+}
+
+function normalizeHowTopic(remainder: string): string {
+  let topic = remainder.trim();
+  topic = topic.replace(/^(is|are|was|were)\s+/i, "");
+  if (!/^the\b/i.test(topic)) {
+    topic = "the " + topic;
+  }
+  return topic.trim();
+}
+
+function isYesNoQuestion(word: string): boolean {
+  return [
+    "have",
+    "has",
+    "had",
+    "did",
+    "do",
+    "does",
+    "is",
+    "are",
+    "was",
+    "were",
+    "will",
+    "can",
+    "could",
+    "should",
+    "would",
+  ].includes(word);
+}
+
+function findConversationEntryIndex(
+  entries: ConversationEntry[],
+  speaker: string,
+  statement: string
+): number {
+  const targetSpeaker = normalizeName(speaker);
+  const normalizedStatement = normalizeForMatch(statement);
+
+  for (let i = 0; i < entries.length; i++) {
+    if (normalizeName(entries[i].speaker) !== targetSpeaker) {
+      continue;
+    }
+    const normalizedContent = normalizeForMatch(entries[i].content);
+    if (
+      normalizedContent &&
+      (normalizedStatement.includes(normalizedContent) ||
+        normalizedContent.includes(normalizedStatement))
+    ) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+function normalizeForMatch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+}
+
+function normalizeName(name: string): string {
+  return name.toLowerCase().replace(/^lord\s+/, "").trim();
+}
+
+function classifyAnswerTone(content: string): AnswerTone | null {
+  const text = content.toLowerCase();
+  if (/(^|\b)(yes|yep|yeah|affirmative|confirmed|done|already|of course|sure)(\b|$)/.test(text)) {
+    return "positive";
+  }
+  if (/(^|\b)(no|nope|not yet|haven't|have not|didn't|cannot|can't)(\b|$)/.test(text)) {
+    return "negative";
+  }
+  return null;
+}
+
+function ensurePeriod(sentence: string): string {
+  const trimmed = sentence.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return /[.!?]$/.test(trimmed) ? trimmed : trimmed + ".";
 }
 
 function capitalizeWords(text: string): string {

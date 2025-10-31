@@ -1,4 +1,8 @@
 import { app, executeSummariseChat } from "./agent";
+import { exact } from "x402/schemes";
+import { findMatchingPaymentRequirements } from "x402/shared";
+import { useFacilitator } from "x402/verify";
+import { settleResponseHeader } from "x402/types";
 import nacl from "tweetnacl";
 
 const port = Number(process.env.PORT ?? 8787);
@@ -902,92 +906,210 @@ const server = Bun.serve({
 
     // Agent app routes - intercept entrypoint responses for Discord callbacks
     if (url.pathname.includes("/entrypoints/") && url.pathname.includes("/invoke")) {
-      // Check if this is the "summarise chat" entrypoint and enforce payment
-      if (url.pathname.includes("summarise%20chat") || url.pathname.includes("summarise chat")) {
+      const isSummariseEntrypoint =
+        url.pathname.includes("summarise%20chat") || url.pathname.includes("summarise chat");
+      if (isSummariseEntrypoint) {
         const hasPaymentHeader = req.headers.get("X-PAYMENT");
         console.log(`[payment] Entrypoint called: ${url.pathname}`);
         console.log(`[payment] X-PAYMENT header present: ${!!hasPaymentHeader}`);
-        
+
+        const payToAddress =
+          process.env.PAY_TO || "0x1b0006DbFbF4d8Ec99cd7C40C43566EaA7D95feD";
+        const facilitatorUrl =
+          process.env.FACILITATOR_URL || "https://facilitator.x402.rs";
+        const agentBaseUrl =
+          process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
+        const fullEntrypointUrl =
+          agentBaseUrl + url.pathname + (url.search ? url.search : "");
+        const price = process.env.ENTRYPOINT_PRICE || "0.10";
+        const currency = process.env.PAYMENT_CURRENCY || "USDC";
+        const x402Version = 1.0;
+
+        const paymentRequirement = {
+          scheme: "exact" as const,
+          resource: fullEntrypointUrl,
+          description: `Summarise Discord channel - Pay $${price} ${currency}`,
+          mimeType: "application/json",
+          payTo: payToAddress,
+          maxAmountRequired: "100000",
+          maxTimeoutSeconds: 300,
+          network: "base" as const,
+          asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          extra: {
+            name: "USD Coin",
+            version: "2",
+          },
+        };
+        const paymentRequirements = [paymentRequirement];
+
         if (!hasPaymentHeader) {
-          // Return 402 Payment Required with proper payment requirements
-          const payToAddress = process.env.PAY_TO || "0x1b0006DbFbF4d8Ec99cd7C40C43566EaA7D95feD";
-          
-          // Always use HTTPS for the resource URL, even if request came in via HTTP
-          const agentBaseUrl = process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
-          const fullEntrypointUrl = agentBaseUrl + url.pathname + (url.search ? url.search : "");
-          
           console.log(`[payment] Returning 402 Payment Required for: ${fullEntrypointUrl}`);
-          // Calculate formatted price for description
-          const price = process.env.ENTRYPOINT_PRICE || "0.10";
-          const currency = process.env.PAYMENT_CURRENCY || "USDC";
-          
-          // Get facilitator URL from config or env
-          const facilitatorUrl = process.env.FACILITATOR_URL || "https://facilitator.x402.rs";
-          
           return Response.json(
             {
-              x402Version: 1.0,
-              accepts: [
-                {
-                  scheme: "exact",
-                  resource: fullEntrypointUrl,
-                  description: `Summarise Discord channel - Pay $${price} ${currency}`,
-                  mimeType: "application/json",
-                  payTo: payToAddress,
-                  maxAmountRequired: "100000", // 0.10 USDC (6 decimals = 100000 / 10^6)
-                  maxTimeoutSeconds: 300,
-                  network: "base",
-                  asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base (6 decimals, supports EIP-3009)
-                  facilitator: facilitatorUrl, // Facilitator URL for gasless transactions
-                },
-              ],
+              x402Version,
+              accepts: paymentRequirements,
             },
             { status: 402 }
           );
         }
-      }
-      
-      const discordCallback = url.searchParams.get("discord_callback");
-      
-      if (discordCallback) {
-        // Clone the request and call the app
-        const response = await app.fetch(req);
-        
-        // If successful (2xx), also send result to Discord callback
-        if (response.status >= 200 && response.status < 300) {
-          try {
-            const result = await response.clone().json();
-            
-            // Create a new request for the Discord callback handler
-            // Use AGENT_URL or construct from current request origin
-            const serverHost = process.env.AGENT_URL ? new URL(process.env.AGENT_URL).origin : url.origin;
-            const callbackUrl = `${serverHost}/discord-callback`;
-            
-            console.log(`[discord] Triggering callback to: ${callbackUrl}`);
-            console.log(`[discord] Result keys:`, Object.keys(result || {}));
-            
-            const callbackResponse = await fetch(callbackUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                discord_token: decodeURIComponent(discordCallback),
-                result,
-              }),
-            });
-            
-            if (!callbackResponse.ok) {
-              const errorText = await callbackResponse.text();
-              console.error(`[discord] Callback failed: ${callbackResponse.status} ${errorText}`);
-              console.error(`[discord] Callback URL was: ${callbackUrl}`);
-            } else {
-              console.log(`[discord] Callback successful`);
-            }
-          } catch (err) {
-            console.error("[discord] Failed to parse entrypoint response:", err);
-          }
+
+        let decodedPayment;
+        try {
+          decodedPayment = exact.evm.decodePayment(hasPaymentHeader);
+          decodedPayment.x402Version = x402Version;
+        } catch (error) {
+          console.error("[payment] Failed to decode X-PAYMENT header", error);
+          return Response.json(
+            {
+              error: "Invalid or malformed payment header",
+              accepts: paymentRequirements,
+              x402Version,
+            },
+            { status: 402 }
+          );
         }
-        
-        return response;
+
+        const selectedPaymentRequirements = findMatchingPaymentRequirements(
+          paymentRequirements,
+          decodedPayment
+        );
+
+        if (!selectedPaymentRequirements) {
+          console.error("[payment] Unable to match payment requirements", decodedPayment);
+          return Response.json(
+            {
+              error: "Unable to match payment requirements",
+              accepts: paymentRequirements,
+              x402Version,
+            },
+            { status: 402 }
+          );
+        }
+
+        const facilitatorClient = useFacilitator({
+          url: facilitatorUrl as `${string}://${string}`,
+        });
+        let verification;
+        try {
+          verification = await facilitatorClient.verify(
+            decodedPayment,
+            selectedPaymentRequirements
+          );
+        } catch (error) {
+          console.error("[payment] Facilitator verification error", error);
+          return Response.json(
+            {
+              error: "Failed to verify payment",
+              accepts: paymentRequirements,
+              x402Version,
+            },
+            { status: 402 }
+          );
+        }
+
+        if (!verification.isValid) {
+          console.error("[payment] Payment verification failed", verification);
+          return Response.json(
+            {
+              error: verification.invalidReason || "Payment verification failed",
+              accepts: paymentRequirements,
+              payer: verification.payer,
+              x402Version,
+            },
+            { status: 402 }
+          );
+        }
+
+        const appResponse = await app.fetch(req);
+
+        if (appResponse.status >= 400) {
+          return appResponse;
+        }
+
+        const appResponseClone = appResponse.clone();
+        let settlement;
+        try {
+          settlement = await facilitatorClient.settle(
+            decodedPayment,
+            selectedPaymentRequirements
+          );
+        } catch (error) {
+          console.error("[payment] Facilitator settlement error", error);
+          return Response.json(
+            {
+              error: "Failed to settle payment",
+              accepts: paymentRequirements,
+              x402Version,
+            },
+            { status: 402 }
+          );
+        }
+
+        if (!settlement.success) {
+          console.error("[payment] Settlement failed", settlement);
+          return Response.json(
+            {
+              error: settlement.errorReason || "Failed to settle payment",
+              accepts: paymentRequirements,
+              payer: settlement.payer,
+              x402Version,
+            },
+            { status: 402 }
+          );
+        }
+
+        const settlementHeader = settleResponseHeader(settlement);
+        console.log(`[payment] Settlement succeeded:`, settlement);
+
+        const headers = new Headers(appResponse.headers);
+        headers.set("X-PAYMENT-RESPONSE", settlementHeader);
+        const responseWithHeader = new Response(appResponse.body, {
+          status: appResponse.status,
+          statusText: appResponse.statusText,
+          headers,
+        });
+
+        const discordCallback = url.searchParams.get("discord_callback");
+
+        if (discordCallback) {
+          if (appResponseClone.status >= 200 && appResponseClone.status < 300) {
+            try {
+              const result = await appResponseClone.json();
+              const serverHost = process.env.AGENT_URL
+                ? new URL(process.env.AGENT_URL).origin
+                : url.origin;
+              const callbackUrl = `${serverHost}/discord-callback`;
+
+              console.log(`[discord] Triggering callback to: ${callbackUrl}`);
+              console.log(`[discord] Result keys:`, Object.keys(result || {}));
+
+              const callbackResponse = await fetch(callbackUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  discord_token: decodeURIComponent(discordCallback),
+                  result,
+                }),
+              });
+
+              if (!callbackResponse.ok) {
+                const errorText = await callbackResponse.text();
+                console.error(
+                  `[discord] Callback failed: ${callbackResponse.status} ${errorText}`
+                );
+                console.error(`[discord] Callback URL was: ${callbackUrl}`);
+              } else {
+                console.log(`[discord] Callback successful`);
+              }
+            } catch (err) {
+              console.error("[discord] Failed to parse entrypoint response:", err);
+            }
+          }
+
+          return responseWithHeader;
+        }
+
+        return responseWithHeader;
       }
     }
     

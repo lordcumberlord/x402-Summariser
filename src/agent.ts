@@ -1069,6 +1069,16 @@ function rewriteStatementBullet(
 ): string {
   let clause = clauseSource.trim();
 
+  clause = stripDiscourseMarkers(clause);
+
+  if (!clause) {
+    return speaker + " shared an update.";
+  }
+
+  clause = neutralizeFirstPersonPronouns(clause, speaker);
+  clause = clause.replace(/\s*[–—-]\s*/g, " ");
+  clause = clause.replace(/\s+,/g, ",");
+
   if (!clause) {
     return speaker + " shared an update.";
   }
@@ -1089,6 +1099,43 @@ function rewriteStatementBullet(
 
   const normalized = lowercaseFirst(clause);
   return ensurePeriod(`${speaker} ${normalized}`);
+}
+
+const DISCOURSE_MARKER_REGEX = /^(?:well|ok|okay|oh|anyway|so|hey|hmm|hm|um|uh|alright|right|ah)[\s,;-]+/i;
+
+function stripDiscourseMarkers(text: string): string {
+  let working = text.trim();
+  while (DISCOURSE_MARKER_REGEX.test(working)) {
+    working = working.replace(DISCOURSE_MARKER_REGEX, "").trim();
+  }
+
+  working = working.replace(/^(?:never\s?mind)[\s,;-]+/i, "").trim();
+  return working;
+}
+
+function neutralizeFirstPersonPronouns(text: string, speaker: string): string {
+  const speakerName = capitalizeWords(speaker);
+
+  let working = text;
+
+  const replacements: Array<[RegExp, string | ((match: string) => string)]> = [
+    [/\bi\'m\b/gi, () => `${speakerName} is`],
+    [/\bi\s+am\b/gi, () => `${speakerName} is`],
+    [/\bi\'ve\b/gi, () => `${speakerName} has`],
+    [/\bi\'ll\b/gi, () => `${speakerName} will`],
+    [/\bi\'d\b/gi, () => `${speakerName} would`],
+    [/\bI\b/g, speakerName],
+    [/\bme\b/gi, "them"],
+    [/\bmyself\b/gi, "themself"],
+    [/\bmy\b/gi, "their"],
+    [/\bmine\b/gi, "theirs"],
+  ];
+
+  for (const [pattern, replacement] of replacements) {
+    working = working.replace(pattern, replacement as any);
+  }
+
+  return working;
 }
 
 function parseQuestion(question: string): QuestionParseResult {

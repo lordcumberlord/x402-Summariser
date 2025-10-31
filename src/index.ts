@@ -230,8 +230,7 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
 
 To summarise this channel, please pay **$${price} ${currency}** via x402.
 
-🔗 **Pay & Summarise:**
-${paymentUrl}
+🔗 **Pay & Summarise:** [Click here](${paymentUrl})
 
 After payment, your summary will appear here automatically.`;
 

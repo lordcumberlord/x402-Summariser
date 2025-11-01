@@ -13,6 +13,40 @@ const DISCORD_API_DEFAULT_BASE = "https://discord.com/api/v10";
 const USDC_DECIMALS = 6;
 const DEFAULT_PRICE_USDC = BigInt(100000); // 0.10 USDC (100000 / 10^6)
 const PAYMENT_CALLBACK_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
+const MAX_LOOKBACK_MINUTES = 8 * 60; // 8 hours
+const EPHEMERAL_FLAG = 1 << 6;
+
+function validateLookback(rawValue: unknown) {
+  const numeric = Number(rawValue);
+
+  if (!Number.isFinite(numeric)) {
+    return { error: "Lookback must be provided as a number of minutes." } as const;
+  }
+
+  const minutes = Math.floor(numeric);
+
+  if (minutes <= 0) {
+    return { error: "Lookback must be at least 1 minute." } as const;
+  }
+
+  if (minutes > MAX_LOOKBACK_MINUTES) {
+    return {
+      error: `Lookback may not exceed ${MAX_LOOKBACK_MINUTES} minutes (8 hours).`,
+    } as const;
+  }
+
+  return { minutes } as const;
+}
+
+function makeEphemeralResponse(message: string): Response {
+  return Response.json({
+    type: 4,
+    data: {
+      content: message,
+      flags: EPHEMERAL_FLAG,
+    },
+  });
+}
 
 // Store Discord webhook info temporarily for payment callbacks
 // Map: interaction_token -> { application_id, channel_id, guild_id, lookbackMinutes }
@@ -120,7 +154,13 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
       if (name === "summarise") {
         // Get lookback minutes from options (default: 60)
         const lookbackOption = options?.find((opt: any) => opt.name === "minutes");
-        const lookbackMinutes = lookbackOption?.value ?? 60;
+        const lookbackValidation = validateLookback(lookbackOption?.value ?? 60);
+
+        if ("error" in lookbackValidation) {
+          return makeEphemeralResponse(`❌ ${lookbackValidation.error}`);
+        }
+
+        const { minutes: lookbackMinutes } = lookbackValidation;
 
         // Validate required fields
         if (!channel_id) {
@@ -144,8 +184,8 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
         // Process in background - route through x402 payment-enabled entrypoint
         (async () => {
           try {
-          console.log(`[discord] Processing summarise command: channel=${channel_id}, guild=${guild_id}, minutes=${lookbackMinutes}`);
-          
+          console.log(`[discord] Summarise request: channel=${channel_id}, guild=${guild_id}, minutes=${lookbackMinutes}`);
+
           const baseUrl =
             process.env.DISCORD_API_BASE_URL ?? DISCORD_API_DEFAULT_BASE;
           const followupUrl = `${baseUrl}/webhooks/${interaction.application_id}/${interaction.token}`;
@@ -153,16 +193,11 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
           // Call the agent-kit entrypoint (which handles x402 payments)
           const agentBaseUrl = process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
           const entrypointUrl = `${agentBaseUrl}/entrypoints/summarise%20chat/invoke`;
-          
-          console.log(`[discord] Calling entrypoint: ${entrypointUrl}`);
 
           // Ensure channel_id is valid
           if (!channel_id || typeof channel_id !== "string" || channel_id.trim() === "") {
             throw new Error(`Invalid channel_id: ${channel_id}. Please try the command again.`);
           }
-
-          console.log(`[discord] Sending request with channelId="${channel_id}", serverId="${guild_id}", lookbackMinutes=${lookbackMinutes}`);
-
           // Make request to entrypoint (without payment headers - it will return payment instructions)
           const entrypointResponse = await fetch(entrypointUrl, {
             method: "POST",
@@ -449,12 +484,19 @@ const server = Bun.serve({
     if (url.pathname === "/pay" && req.method === "GET") {
       const channelId = url.searchParams.get("channelId");
       const serverId = url.searchParams.get("serverId");
-      const lookbackMinutes = url.searchParams.get("lookbackMinutes");
+      const lookbackMinutesParam = url.searchParams.get("lookbackMinutes");
       const discordCallback = url.searchParams.get("discord_callback");
-      
-      if (!channelId || !lookbackMinutes) {
+
+      if (!channelId || lookbackMinutesParam === null) {
         return Response.json({ error: "Missing required parameters" }, { status: 400 });
       }
+
+      const lookbackValidation = validateLookback(lookbackMinutesParam);
+      if ("error" in lookbackValidation) {
+        return Response.json({ error: lookbackValidation.error }, { status: 400 });
+      }
+
+      const { minutes: lookbackMinutes } = lookbackValidation;
 
       const agentBaseUrl = process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
       const entrypointUrl = `${agentBaseUrl}/entrypoints/summarise%20chat/invoke`;
@@ -510,7 +552,6 @@ const server = Bun.serve({
     // Load x402-fetch and viem using import map (esm.sh with bundle flag handles dependencies)
     (async () => {
       try {
-        console.log('Loading x402-fetch and viem via esm.sh (bundled)...');
         const [x402Module, viemModule, chainsModule] = await Promise.all([
           import('x402-fetch'),
           import('viem'),
@@ -564,7 +605,7 @@ const server = Bun.serve({
         if (walletProvider.request) {
           try {
             const accounts = await walletProvider.request({ method: 'eth_requestAccounts' });
-            console.log('✅ Wallet connected, accounts:', accounts);
+            console.log('✅ Wallet connected');
             
             if (!accounts || accounts.length === 0) {
               throw new Error('No accounts found. Please unlock your wallet.');
@@ -581,11 +622,9 @@ const server = Bun.serve({
               const currentChainIdHex = await walletProvider.request({ method: 'eth_chainId' });
               const currentChainId = parseInt(currentChainIdHex, 16);
               
-              console.log('🔗 Current network chain ID:', currentChainId);
-              
               if (currentChainId !== BASE_CHAIN_ID) {
                 status.innerHTML = '<p>⚠️ Switching to Base network...</p>';
-                console.log('⚠️ Wrong network. Current:', currentChainId, 'Required:', BASE_CHAIN_ID);
+                console.warn('⚠️ Wrong network. Current:', currentChainId, 'Required:', BASE_CHAIN_ID);
                 
                 try {
                   // Try to switch to Base network
@@ -593,12 +632,11 @@ const server = Bun.serve({
                     method: 'wallet_switchEthereumChain',
                     params: [{ chainId: BASE_CHAIN_ID_HEX }],
                   });
-                  console.log('✅ Successfully switched to Base network');
                   status.innerHTML = '<p>✅ Switched to Base network</p>';
                 } catch (switchError) {
                   // If the error is 4902, the chain is not added to MetaMask
                   if (switchError.code === 4902) {
-                    console.log('⚠️ Base network not found in wallet. Adding...');
+                    console.warn('⚠️ Base network not found in wallet. Adding...');
                     status.innerHTML = '<p>➕ Adding Base network to wallet...</p>';
                     
                     await walletProvider.request({
@@ -615,7 +653,6 @@ const server = Bun.serve({
                         blockExplorerUrls: ['https://basescan.org']
                       }],
                     });
-                    console.log('✅ Base network added successfully');
                   } else if (switchError.code === 4001) {
                     throw new Error('Network switch rejected. Please switch to Base network manually in MetaMask.');
                   } else {
@@ -623,7 +660,7 @@ const server = Bun.serve({
                   }
                 }
               } else {
-                console.log('✅ Already on Base network');
+                status.innerHTML = '<p>✅ Already on Base network</p>';
               }
             } catch (networkError) {
               console.error('❌ Network check error:', networkError);
@@ -638,48 +675,20 @@ const server = Bun.serve({
         }
         
         // Create a viem wallet client (x402-fetch expects this format)
-        console.log('🔄 Creating wallet client with viem...');
         const walletClient = createWalletClient({
           account: accountAddress,
           chain: base,
           transport: custom(walletProvider)
         });
-        console.log('✅ Wallet client created:', { address: accountAddress });
         
         // Wrap fetch with payment handling (pass viem wallet client)
         // maxValue: 0.10 USDC = 100000 (6 decimals)
         // Note: x402 uses EIP-3009 for gasless transactions - facilitator pays gas
-        console.log('🔄 Creating x402Fetch wrapper...');
-        console.log('💳 Payment details:', {
-          maxAmount: BigInt(100000),
-          maxAmountFormatted: '0.10 USDC',
-          chain: 'Base (8453)',
-          asset: 'USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)',
-          walletAddress: accountAddress,
-          gasless: true, // Facilitator pays gas fees via EIP-3009
-          facilitator: 'https://facilitator.x402.rs'
-        });
         const x402Fetch = wrapFetchWithPayment(fetch, walletClient, BigInt(100000));
-        console.log('✅ x402Fetch wrapper created');
         
         const entrypointUrl = '${entrypointUrl}';
-        console.log('📞 Calling entrypoint:', entrypointUrl);
-        
-        // Use wrapped fetch to process payment
-        console.log('📞 Making payment request to:', entrypointUrl);
         
         status.innerHTML = '<p>💳 Processing payment (gasless via facilitator)...</p>';
-        
-        console.log('🚀 Starting payment request...');
-        console.log('📋 Request details:', {
-          url: entrypointUrl,
-          method: 'POST',
-          input: {
-            channelId: '${channelId}',
-            serverId: '${serverId || ""}',
-            lookbackMinutes: ${lookbackMinutes}
-          }
-        });
         
         // Check USDC balance before payment to verify transaction processing
         const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // USDC on Base
@@ -694,8 +703,6 @@ const server = Bun.serve({
             }, 'latest']
           });
           balanceBefore = BigInt(balanceData);
-          const balanceFormatted = Number(balanceBefore) / 1e6;
-          console.log('💰 USDC balance before payment:', balanceFormatted, 'USDC');
         } catch (balanceError) {
           console.warn('⚠️ Could not check USDC balance:', balanceError);
         }
@@ -718,7 +725,6 @@ const server = Bun.serve({
               },
             }),
           });
-          console.log('✅ Payment request completed, response received');
           
           // Check USDC balance after payment to verify transaction processed
           if (balanceBefore !== null) {
@@ -732,20 +738,6 @@ const server = Bun.serve({
                 }, 'latest']
               });
               const balanceAfter = BigInt(balanceDataAfter);
-              const balanceFormattedBefore = Number(balanceBefore) / 1e6;
-              const balanceFormattedAfter = Number(balanceAfter) / 1e6;
-              const difference = balanceFormattedBefore - balanceFormattedAfter;
-              
-              console.log('💰 USDC balance after payment:', balanceFormattedAfter, 'USDC');
-              console.log('💰 Balance change:', difference >= 0 ? '-' + difference : '+' + Math.abs(difference), 'USDC');
-              
-              if (difference >= 0.09) {
-                console.log('✅ USDC balance decreased - transaction processed successfully!');
-              } else if (difference > 0) {
-                console.log('⚠️ USDC balance decreased by', difference, '- transaction may be processing');
-              } else {
-                console.warn('⚠️ USDC balance did not decrease immediately - transaction may still be settling or MetaMask returned a cached balance.');
-              }
             } catch (balanceError) {
               console.warn('⚠️ Could not check USDC balance after payment:', balanceError);
             }
@@ -762,31 +754,10 @@ const server = Bun.serve({
           throw new Error('Payment failed: ' + (paymentError.message || 'Unknown error. Please check the console for details.'));
         }
 
-        console.log('📊 Response status:', response.status, response.statusText);
-        const responseHeaders = Object.fromEntries(response.headers.entries());
-        console.log('📋 Response headers:', responseHeaders);
-        
         // Check for transaction hash in X-PAYMENT-RESPONSE header
         const paymentResponseHeader = response.headers.get('X-PAYMENT-RESPONSE');
-        console.log('💳 X-PAYMENT-RESPONSE header:', paymentResponseHeader);
-        
-        // Also check for X-PAYMENT header which might contain transaction info
-        const paymentHeader = response.headers.get('X-PAYMENT');
-        console.log('💳 X-PAYMENT header:', paymentHeader);
-        
-        // Check all headers for payment-related info
-        const allHeaders = Array.from(response.headers.entries());
-        const paymentHeaders = allHeaders.filter(([key]) => key.toLowerCase().includes('payment'));
-        console.log('💳 All payment-related headers:', paymentHeaders);
-        
-        // Log the full response object to check for transaction info
-        console.log('🔍 Full response object keys:', Object.keys(response));
-        console.log('🔍 Response body used:', response.bodyUsed);
         
         const data = await response.json();
-        console.log('📦 Response data:', data);
-        console.log('📦 Response data keys:', Object.keys(data));
-        console.log('📦 Response data (full JSON):', JSON.stringify(data, null, 2));
         
         // Extract transaction hash from various possible locations
         let txHash = null;
@@ -797,7 +768,6 @@ const server = Bun.serve({
             const decodedHeader = window.atob(paymentResponseHeader);
             const paymentInfo = JSON.parse(decodedHeader);
             txHash = paymentInfo.txHash || paymentInfo.transactionHash || paymentInfo.hash;
-            console.log('💰 Payment info from header:', paymentInfo);
           } catch (e) {
             console.warn('⚠️ Could not parse X-PAYMENT-RESPONSE header:', e);
           }
@@ -806,7 +776,6 @@ const server = Bun.serve({
         // Check in response data recursively
         if (!txHash && data.payment) {
           txHash = data.payment.txHash || data.payment.transactionHash || data.payment.hash;
-          console.log('💳 Found in data.payment:', data.payment);
         }
         
         if (!txHash && data.txHash) {
@@ -831,7 +800,6 @@ const server = Bun.serve({
           for (const key in data) {
             if (key.toLowerCase().includes('tx') || key.toLowerCase().includes('hash')) {
               const value = data[key];
-              console.log('🔍 Found potential tx field: ' + key + ' = ' + value);
               if (typeof value === 'string' && value.startsWith('0x')) {
                 txHash = value;
                 break;
@@ -896,7 +864,6 @@ const server = Bun.serve({
     }
     
     window.pay = pay;
-    console.log('✅ Payment function loaded');
   </script>
 </body>
 </html>`, {
@@ -911,7 +878,6 @@ const server = Bun.serve({
       if (isSummariseEntrypoint) {
         const hasPaymentHeader = req.headers.get("X-PAYMENT");
         console.log(`[payment] Entrypoint called: ${url.pathname}`);
-        console.log(`[payment] X-PAYMENT header present: ${!!hasPaymentHeader}`);
 
         const payToAddress =
           process.env.PAY_TO || "0x1b0006DbFbF4d8Ec99cd7C40C43566EaA7D95feD";
@@ -1081,7 +1047,6 @@ const server = Bun.serve({
               const callbackUrl = `${serverHost}/discord-callback`;
 
               console.log(`[discord] Triggering callback to: ${callbackUrl}`);
-              console.log(`[discord] Result keys:`, Object.keys(result || {}));
 
               const callbackResponse = await fetch(callbackUrl, {
                 method: "POST",

@@ -62,6 +62,32 @@ type DiscordMessageLinkParts = {
   messageId: string;
 };
 
+type SummarizerAttachment = {
+  url: string;
+  filename?: string | null;
+  content_type?: string | null;
+  caption?: string | null;
+};
+
+type SummarizerReaction = {
+  emoji: string | null;
+  count: number;
+};
+
+type SummarizerMessage = {
+  id: string;
+  timestamp: string;
+  author: string;
+  is_admin: boolean;
+  is_bot: boolean;
+  text: string;
+  attachments: SummarizerAttachment[];
+  reactions: SummarizerReaction[];
+  reply_to_id?: string;
+  thread_id?: string;
+  event_type?: string;
+};
+
 const DISCORD_API_DEFAULT_BASE = "https://discord.com/api/v10";
 const DISCORD_EPOCH = 1420070400000n;
 const MAX_FETCH_PAGES = 10; // safeguards agent costs by limiting to 1,000 messages.
@@ -118,35 +144,65 @@ if (!axClient.isConfigured()) {
   );
 }
 
-const discordSummaryFlow = flow<{
-  conversation: string;
-  timeWindow: string;
-  channelLabel: string;
-  lookbackMinutes?: number;
+const structuredSummarizerPrompt = `System Prompt: Chat Summarizer (Telegram/Discord)
+
+You are a chat summarizer. Your job is to read a batch of Discord/Telegram messages and produce a concise, useful summary that captures only the important parts.
+
+Inputs
+- platform: which client to optimize formatting for ("discord" or "telegram")
+- window: natural language description of the time span (e.g., "last 24h")
+- maxChars: hard cap on response length
+- payload: JSON string containing the fields { platform, window, max_chars, messages }
+
+Each message object includes: id, timestamp, author, is_admin, is_bot, text, attachments[], reactions[], reply_to_id, thread_id, event_type (such as user_join, user_leave, call_start, pin, rename, command, etc.).
+
+What to do:
+1. Drop noise: ignore stickers/GIFs without captions, emoji-only replies, join/leave notices, bot command echoes, routine pins/unpins, quick acknowledgements, or duplicated cross-posts.
+2. Reconstruct threads using reply_to_id/thread_id/quotes.
+3. Score importance using the rubric below. Propagate scores within threads.
+4. Select only the highest value topics until you approach maxChars. Prefer recent items when tied.
+5. For each topic, write a short headline and up to three tight bullets covering key change, decisions/next steps (bold owners/dates), and crucial numbers/outcomes.
+6. Add an "Unresolved" section only if open questions/blockers remain.
+7. Finish with a compact "Links/Files" list containing only items referenced in the bullets.
+
+Importance rubric:
++3 Decision/policy change/escalation; +3 Concrete task with owner/date.
++2 Unblocking answers, incident resolution, shared result/metric, scheduled meetings.
++1 New proposal/plan, high engagement (@here/@everyone or ≥5 reactions), authoritative guidance, meaningful attachment.
+Recency boost: +1 if within the last 4 hours and still active.
+Down-weight: −2 off-topic banter/memes/duplicates; −1 bare links without context; −1 bot/system noise.
+
+Formatting requirements:
+- Produce Markdown tailored to the target platform; use bold/italics/backticks sparingly.
+- Use short headers and concise bullets.
+- Bold decisions, owners, and due dates.
+- Keep output under maxChars characters.
+- If nothing material happened, output exactly \`_No material changes or decisions in {window}_\`.
+- Do not wrap the response in code fences.
+
+The JSON payload is provided via the \`payload\` variable. Parse and use it to understand the conversation. Adhere strictly to the instructions above.`;
+
+const structuredSummarizerSignature =
+  "platform:string, window:string, maxChars:number, payload:string -> summary:string";
+const structuredSummarizerNodeSpec = `${structuredSummarizerSignature} ${JSON.stringify(
+  structuredSummarizerPrompt
+)}`;
+
+const structuredSummaryFlow = flow<{
+  platform: string;
+  window: string;
+  maxChars: number;
+  payload: string;
 }>()
-  .node(
-    "summarizer",
-    'conversation:string, timeWindow:string, channelLabel:string, lookbackMinutes?:number -> summary:string "You are a cordial Discord channel summarizer. The conversation is provided as lines in the format Speaker: message. Do not copy messages verbatim. Instead, write a friendly greeting (for example, Good morning! or Hey there!) followed by a short sentence such as Here is what happened in the last X minutes: where X is the provided lookbackMinutes (or infer it from timeWindow if lookbackMinutes is missing). After the greeting, produce 3-6 bullet points using the • character that capture: (1) key conclusions or decisions, (2) any disagreement or opposition and how it was resolved (if present), (3) notable highlights or themes, and (4) anything funny, high-energy, or heavily reacted-to (messages with emoji xN counts are likely important). Each bullet should synthesize multiple messages and stay concise (one sentence). Mention participants by name when relevant. Never include raw timestamps or quote every message."'
-  )
-  .node(
-    "actionables",
-    'conversation:string, summary:string -> actionables:string[] "List concrete follow-up actions mentioned or implied by the discussion. Whenever possible include the owner (e.g. @user) and a short description. Return up to five items. If nothing actionable was discussed, return an empty list."'
-  )
+  .node("summarizer", structuredSummarizerNodeSpec)
   .execute("summarizer", (state) => ({
-    conversation: state.conversation,
-    timeWindow: state.timeWindow,
-    channelLabel: state.channelLabel,
-    lookbackMinutes: state.lookbackMinutes,
-  }))
-  .execute("actionables", (state) => ({
-    conversation: state.conversation,
-    summary: state.summarizerResult.summary as string,
+    platform: state.platform,
+    window: state.window,
+    maxChars: state.maxChars,
+    payload: state.payload,
   }))
   .returns((state) => ({
     summary: state.summarizerResult.summary as string,
-    actionables: Array.isArray(state.actionablesResult.actionables)
-      ? (state.actionablesResult.actionables as string[])
-      : [],
   }));
 
 const { app, addEntrypoint } = createAgentApp(
@@ -423,15 +479,32 @@ addEntrypoint({
     }
 
     try {
-      const result = await discordSummaryFlow.forward(llm, {
-        conversation,
-        timeWindow,
-        channelLabel,
-        lookbackMinutes: lookbackMinutes,
+      const result = await structuredSummaryFlow.forward(llm, {
+        platform: "discord",
+        window: timeWindow,
+        maxChars: 1000, // Example max chars, adjust as needed
+        payload: JSON.stringify({
+          platform: "discord",
+          window: timeWindow,
+          max_chars: 1000,
+          messages: messages.map((msg) => ({
+            id: msg.id,
+            timestamp: msg.timestamp,
+            author: msg.author,
+            is_admin: false, // Placeholder, needs actual Discord API data
+            is_bot: false, // Placeholder, needs actual Discord API data
+            text: msg.content,
+            attachments: msg.attachments,
+            reactions: msg.reactions,
+            reply_to_id: msg.reply_to_id,
+            thread_id: msg.thread_id,
+            event_type: "message", // Placeholder, needs actual Discord API data
+          })),
+        }),
       });
 
-      const usageEntry = discordSummaryFlow.getUsage().at(-1);
-      discordSummaryFlow.resetUsage();
+      const usageEntry = structuredSummaryFlow.getUsage().at(-1);
+      structuredSummaryFlow.resetUsage();
 
       // Clean up summary: remove timestamps and payment-related content
       let summary = result.summary ?? "";
@@ -453,9 +526,7 @@ addEntrypoint({
       return {
         output: {
           summary: summary || "Summary generated successfully.",
-          actionables: Array.isArray(result.actionables)
-            ? (result.actionables as string[])
-            : [],
+          actionables: [],
         },
         model: usageEntry?.model,
       };
@@ -477,7 +548,7 @@ addEntrypoint({
       }
 
       console.error("[discord-summary-agent] LLM flow error:", errorDetails);
-      discordSummaryFlow.resetUsage();
+      structuredSummaryFlow.resetUsage();
 
       const fallbackSummary = conversation
         .split("\n")
@@ -559,153 +630,61 @@ addEntrypoint({
       return trimmed && !trimmed.startsWith("/");
     });
     if (meaningfulMessages.length < 3) {
+      const windowLabel = `last ${lookbackMinutes} minutes`;
       return {
         output: {
-          summary: `Not enough recent Telegram conversation to summarise yet. Try again after a few more messages.`,
+          summary: `_No material changes or decisions in ${windowLabel}_`,
           actionables: [],
         },
         model: "telegram-insufficient",
       };
     }
 
-    const sortedMessages = [...meaningfulMessages].sort(
-      (a, b) => a.timestampMs - b.timestampMs
+    const summarizerMessages = buildTelegramSummarizerMessages(meaningfulMessages);
+    const windowLabel = `last ${lookbackMinutes} minutes`;
+    const maxChars = 1100;
+    const payload = buildSummarizerPayload(
+      "telegram",
+      windowLabel,
+      maxChars,
+      summarizerMessages
     );
-
-    const conversationLines = sortedMessages
-      .map((msg) => {
-        const trimmed = msg.text?.trim();
-        if (!trimmed) {
-          return null;
-        }
-        const speaker =
-          msg.authorDisplay ||
-          (msg.authorUsername ? `@${msg.authorUsername}` : undefined) ||
-          (msg.authorId ? `user-${msg.authorId}` : "Member");
-        return `${speaker}: ${trimmed}`;
-      })
-      .filter((line): line is string => Boolean(line));
-
-    if (!conversationLines.length) {
-      return {
-        output: {
-          summary: `Recent Telegram messages in chat ${chatIdRaw} were empty or unsupported for summarisation.`,
-          actionables: [],
-        },
-        model: "telegram-empty",
-      };
-    }
-
-    const conversation = conversationLines.join("\n");
-    const conversationEntries = extractConversationEntries(conversation);
-
-    const start = new Date(sortedMessages[0].timestampMs);
-    const end = new Date(sortedMessages[sortedMessages.length - 1].timestampMs);
-    const rangeLabel = `the last ${lookbackMinutes} minutes`;
-    const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
-    const channelLabel = `Telegram chat ${chatIdRaw}`;
 
     const llm = axClient.ax;
     if (!llm) {
-      const fallbackSummary = conversation
-        .split("\n")
-        .slice(0, 5)
-        .join("\n")
-        .trim();
-
-      const fallbackText =
-        fallbackSummary ||
-        `Messages retrieved (${rangeLabel}), but AxFlow is not configured to generate a summary.`;
-
       return {
         output: {
-          summary: finalizeSummary(
-            fallbackText,
-            lookbackMinutes,
-            rangeLabel,
-            conversationEntries
-          ),
+          summary: `_No material changes or decisions in ${windowLabel}_`,
           actionables: [],
         },
-        model: "axllm-fallback",
+        model: "telegram-fallback",
       };
     }
 
     try {
-      const result = await discordSummaryFlow.forward(llm, {
-        conversation,
-        timeWindow,
-        channelLabel,
-        lookbackMinutes,
+      const result = await structuredSummaryFlow.forward(llm, {
+        platform: "telegram",
+        window: windowLabel,
+        maxChars,
+        payload,
       });
 
-      const usageEntry = discordSummaryFlow.getUsage().at(-1);
-      discordSummaryFlow.resetUsage();
-
-      let summary = result.summary ?? "";
-      summary = summary
-        .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "")
-        .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "")
-        .replace(/x402 Summariser[^\n]*\n?/gi, "")
-        .trim();
-
-      summary = finalizeSummary(
-        summary,
-        lookbackMinutes,
-        rangeLabel,
-        conversationEntries
-      );
-
+      const summary = (result.summary ?? "").trim();
       return {
         output: {
-          summary: summary || "Summary generated successfully.",
-          actionables: Array.isArray(result.actionables)
-            ? (result.actionables as string[])
-            : [],
-        },
-        model: usageEntry?.model,
-      };
-    } catch (error: any) {
-      const errorDetails: Record<string, unknown> = {
-        message: error?.message,
-        name: error?.name,
-        stack: error?.stack,
-      };
-
-      if (error?.response) {
-        errorDetails.responseStatus = error.response.status;
-        errorDetails.responseData = error.response?.data;
-        errorDetails.responseHeaders = error.response?.headers;
-      }
-
-      if (error?.cause) {
-        errorDetails.cause = error.cause;
-      }
-
-      console.error("[telegram-summary-agent] LLM flow error:", errorDetails);
-      discordSummaryFlow.resetUsage();
-
-      const fallbackSummary = conversation
-        .split("\n")
-        .slice(0, 5)
-        .join("\n")
-        .trim();
-
-      const fallbackText =
-        fallbackSummary ||
-        `Messages retrieved (${rangeLabel}), but failed to generate AI summary: ${error?.message || String(error)}`;
-
-      return {
-        output: {
-          summary: finalizeSummary(
-            fallbackText,
-            lookbackMinutes,
-            rangeLabel,
-            conversationEntries
-          ),
+          summary: summary || `_No material changes or decisions in ${windowLabel}_`,
           actionables: [],
         },
-        model: "axllm-fallback",
+        model: "structured-summary",
+      };
+    } catch (error: any) {
+      console.error("[telegram-summary-agent] LLM flow error:", error);
+      return {
+        output: {
+          summary: `_No material changes or decisions in ${windowLabel}_`,
+          actionables: [],
+        },
+        model: "telegram-error",
       };
     }
   },
@@ -857,6 +836,9 @@ export async function executeSummariseChat(input: {
   const conversation = formatConversation(messages);
   const conversationEntries = extractConversationEntries(conversation);
   const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
+  const windowLabel = rangeLabel.startsWith("the ")
+    ? rangeLabel.replace(/^the\s+/i, "")
+    : rangeLabel;
 
   const llm = axClient.ax;
   if (!llm) {
@@ -866,9 +848,7 @@ export async function executeSummariseChat(input: {
       .join("\n")
       .trim();
 
-    const fallbackText =
-      fallbackSummary ||
-      `Messages retrieved (${rangeLabel}), but AxFlow is not configured to generate a summary.`;
+    const fallbackText = fallbackSummary || `_No material changes or decisions in ${windowLabel}_`;
 
     return {
       summary: finalizeSummary(
@@ -881,45 +861,39 @@ export async function executeSummariseChat(input: {
     };
   }
 
+  const summarizerMessages = buildDiscordSummarizerMessages(messages, guildMeta);
+  const maxChars = 1200;
+  const payload = buildSummarizerPayload(
+    "discord",
+    windowLabel,
+    maxChars,
+    summarizerMessages
+  );
+
   try {
-    // Add timeout to prevent hanging
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("LLM request timed out after 30 seconds")), 30000);
+    const result = await structuredSummaryFlow.forward(llm, {
+      platform: "discord",
+      window: windowLabel,
+      maxChars,
+      payload,
     });
 
-    const flowPromise = discordSummaryFlow.forward(llm, {
-      conversation,
-      timeWindow,
-      channelLabel,
-      lookbackMinutes: lookbackMinutes,
-    });
+    const summary = (result.summary ?? "").trim();
+    if (!summary) {
+      return {
+        summary: `_No material changes or decisions in ${windowLabel}_`,
+        actionables: [],
+      };
+    }
 
-    const result = await Promise.race([flowPromise, timeoutPromise]) as typeof flowPromise extends Promise<infer T> ? T : never;
-
-    discordSummaryFlow.resetUsage();
-
-    // Clean up summary: remove timestamps and payment-related content
-    let summary = result.summary ?? "";
-    
-    // Remove timestamps in various formats
-    summary = summary
-      .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "") // ISO timestamps
-      .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
-      .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
-      .trim();
-
-    const finalSummary = finalizeSummary(
-      summary,
-      lookbackMinutes,
-      rangeLabel,
-      conversationEntries
-    );
+    // Ensure Discord-friendly formatting (guard against overly long output)
+    const trimmedSummary = summary.length > 1800
+      ? summary.slice(0, 1795).trimEnd() + " …"
+      : summary;
 
     return {
-      summary: finalSummary || "Summary generated successfully.",
-      actionables: Array.isArray(result.actionables)
-        ? (result.actionables as string[])
-        : [],
+      summary: trimmedSummary,
+      actionables: [],
     };
   } catch (error: any) {
     console.error("[discord-summary-agent] LLM flow error:", error);
@@ -931,8 +905,7 @@ export async function executeSummariseChat(input: {
       .trim();
 
     const fallbackText =
-      fallbackSummary ||
-      `Messages retrieved (${rangeLabel}), but failed to generate AI summary: ${error.message}`;
+      fallbackSummary || `_No material changes or decisions in ${windowLabel}_`;
 
     return {
       summary: finalizeSummary(
@@ -2006,6 +1979,160 @@ function snowflakeFromDate(date: Date, adjustment: bigint = 0n): string {
   const base = (ms - DISCORD_EPOCH) << 22n;
   const value = base + adjustment;
   return (value > 0n ? value : 0n).toString();
+}
+
+function buildDiscordSummarizerMessages(
+  messages: any[],
+  guildMeta: any | null
+): SummarizerMessage[] {
+  return messages.map((message) => {
+    const authorName =
+      message?.author?.global_name ||
+      message?.author?.display_name ||
+      message?.author?.username ||
+      "Unknown";
+
+    const textParts: string[] = [];
+    if (message?.content) {
+      textParts.push(message.content);
+    }
+    if (Array.isArray(message?.embeds)) {
+      for (const embed of message.embeds) {
+        if (embed?.title) {
+          textParts.push(`Embed title: ${embed.title}`);
+        }
+        if (embed?.description) {
+          textParts.push(embed.description);
+        }
+        if (Array.isArray(embed?.fields)) {
+          for (const field of embed.fields) {
+            if (field?.name || field?.value) {
+              textParts.push(`${field?.name ?? ""} ${field?.value ?? ""}`.trim());
+            }
+          }
+        }
+      }
+    }
+
+    const attachments: SummarizerAttachment[] = Array.isArray(message?.attachments)
+      ? message.attachments.map((attachment: any) => ({
+          url: attachment?.url ?? "",
+          filename: attachment?.filename ?? null,
+          content_type: attachment?.content_type ?? null,
+          caption: attachment?.description ?? null,
+        }))
+      : [];
+
+    const embedAttachments: SummarizerAttachment[] = Array.isArray(message?.embeds)
+      ? message.embeds
+          .map((embed: any) => {
+            if (embed?.url) {
+              return {
+                url: embed.url,
+                filename: embed?.title ?? null,
+                content_type: embed?.type ?? null,
+                caption: embed?.description ?? null,
+              } as SummarizerAttachment;
+            }
+            return null;
+          })
+          .filter(Boolean) as SummarizerAttachment[]
+      : [];
+
+    const reactions: SummarizerReaction[] = Array.isArray(message?.reactions)
+      ? message.reactions.map((reaction: any) => {
+          const emoji = reaction?.emoji;
+          let label: string | null = null;
+          if (!emoji) {
+            label = null;
+          } else if (emoji.id) {
+            label = emoji.name ? `${emoji.name}:${emoji.id}` : emoji.id;
+          } else {
+            label = emoji.name ?? null;
+          }
+          return {
+            emoji: label,
+            count: Number(reaction?.count ?? 0),
+          };
+        })
+      : [];
+
+    const combinedAttachments = [...attachments, ...embedAttachments];
+
+    const text = textParts
+      .filter(Boolean)
+      .join(" \n ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const isOwner =
+      Boolean(guildMeta?.owner_id) && message?.author?.id
+        ? guildMeta.owner_id === message.author.id
+        : false;
+
+    return {
+      id: String(message?.id ?? `temp-${Date.now()}`),
+      timestamp: message?.timestamp ?? new Date().toISOString(),
+      author: authorName,
+      is_admin: isOwner,
+      is_bot: Boolean(message?.author?.bot),
+      text: text || (combinedAttachments.length ? "[attachment]" : ""),
+      attachments: combinedAttachments,
+      reactions,
+      reply_to_id: message?.message_reference?.message_id
+        ? String(message.message_reference.message_id)
+        : undefined,
+      thread_id: message?.thread?.id
+        ? String(message.thread.id)
+        : message?.thread_id
+        ? String(message.thread_id)
+        : undefined,
+      event_type: message?.type !== undefined ? String(message.type) : undefined,
+    };
+  });
+}
+
+function buildTelegramSummarizerMessages(
+  messages: TelegramStoredMessage[]
+): SummarizerMessage[] {
+  return messages.map((msg) => {
+    const authorName =
+      msg.authorDisplay ||
+      (msg.authorUsername ? `@${msg.authorUsername}` : "Member");
+    return {
+      id: String(msg.messageId),
+      timestamp: new Date(msg.timestampMs).toISOString(),
+      author: authorName,
+      is_admin: false,
+      is_bot: false,
+      text: msg.text.trim(),
+      attachments: [],
+      reactions: [],
+      reply_to_id: msg.replyToMessageId
+        ? String(msg.replyToMessageId)
+        : undefined,
+      thread_id: undefined,
+      event_type: "message",
+    };
+  });
+}
+
+function buildSummarizerPayload(
+  platform: "discord" | "telegram",
+  windowLabel: string,
+  maxChars: number,
+  messages: SummarizerMessage[]
+): string {
+  return JSON.stringify(
+    {
+      platform,
+      window: windowLabel,
+      max_chars: maxChars,
+      messages,
+    },
+    null,
+    2
+  );
 }
 
 function buildDiscordHeaders(token: string): HeadersInit {

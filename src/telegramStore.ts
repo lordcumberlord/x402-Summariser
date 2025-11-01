@@ -15,10 +15,12 @@ const messageStore = new Map<number, TelegramStoredMessage[]>();
 export function addTelegramMessage(chatId: number, message: TelegramStoredMessage) {
   const existing = messageStore.get(chatId) ?? [];
   existing.push(message);
-  if (existing.length > MAX_MESSAGES_PER_CHAT) {
-    existing.splice(0, existing.length - MAX_MESSAGES_PER_CHAT);
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const recent = existing.filter((entry) => entry.timestampMs >= cutoff);
+  if (recent.length > MAX_MESSAGES_PER_CHAT) {
+    recent.splice(0, recent.length - MAX_MESSAGES_PER_CHAT);
   }
-  messageStore.set(chatId, existing);
+  messageStore.set(chatId, recent);
 }
 
 export function getTelegramMessages(chatId: number) {

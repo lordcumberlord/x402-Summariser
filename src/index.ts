@@ -284,12 +284,6 @@ After payment, your summary will appear here automatically.`;
           const output = responseData.output || responseData;
           let content = `**Summary**\n${output.summary || "No summary available"}\n\n`;
           
-          if (output.actionables && output.actionables.length > 0) {
-            content += `**Action Items**\n${output.actionables.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}`;
-          } else {
-            content += `*No action items identified.*`;
-          }
-
           console.log(`[discord] Summary completed: ${(output.summary || "").substring(0, 50)}...`);
 
           const followupResponse = await fetch(followupUrl, {
@@ -393,31 +387,12 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
       .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
       .trim();
     
-    // If summary is empty or too short after filtering, use original
-    if (!summary || summary.length < 10) {
-      summary = output?.summary || "Summary generated successfully.";
+    if (!summary) {
+      summary = "_No material changes or decisions in this window._";
     }
     
-    let content = `✅ **Payment Confirmed**\n\n`;
-    content += `${summary}\n\n`;
+    const content = `✅ Payment Confirmed\n\n${summary}`.trim();
     
-    if (output?.actionables && output.actionables.length > 0) {
-      content += `**Action Items**\n${output.actionables.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}`;
-    } else {
-      content += `*No action items identified.*`;
-    }
-    
-    // Log payment verification info if available
-    if (result?.payment || result?.x402Payment || result?.paymentTx) {
-      const paymentInfo = result?.payment || result?.x402Payment || result?.paymentTx;
-      console.log(`[payment] Payment verified:`, {
-        txHash: paymentInfo.txHash || paymentInfo.hash || paymentInfo.transactionHash,
-        from: paymentInfo.from || paymentInfo.sender || paymentInfo.payer,
-        amount: paymentInfo.amount || paymentInfo.value,
-        currency: paymentInfo.currency || paymentInfo.token || "USDC"
-      });
-    }
-
     const followupResponse = await fetch(followupUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -484,18 +459,12 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
     }
 
     const output = result?.output || result;
-    const summary = output?.summary || "No summary available.";
-    const actionables: string[] = Array.isArray(output?.actionables)
-      ? output.actionables
-      : [];
-
-    let messageText = `✅ Payment Confirmed\n\nSummary (last ${callbackData.lookbackMinutes} minutes):\n${summary}`;
-
-    if (actionables.length > 0) {
-      messageText += `\n\nAction Items:\n${actionables
-        .map((item, idx) => `${idx + 1}. ${item}`)
-        .join("\n")}`;
+    let summary = (output?.summary || "").trim();
+    if (!summary) {
+      summary = `_No material changes or decisions in the last ${callbackData.lookbackMinutes} minutes.`;
     }
+
+    const messageText = `✅ Payment Confirmed\n\n${summary}`.trim();
 
     const sendUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
     const sendResponse = await fetch(sendUrl, {

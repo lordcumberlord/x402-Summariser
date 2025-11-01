@@ -110,14 +110,6 @@ export function createTelegramBot(options: {
       paymentMessageId: paymentMessage.message_id,
       expiresAt: Date.now() + PAYMENT_CALLBACK_EXPIRY_MS,
     });
-
-    // Trim stale messages older than 24 hours to keep the cache fresh
-    const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
-    addTelegramMessage(chatId, {
-      messageId: -paymentMessage.message_id,
-      text: "",
-      timestampMs: cutoffMs,
-    });
   });
 
   return bot;

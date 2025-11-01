@@ -5,6 +5,7 @@ import {
   AgentKitConfig,
 } from "@lucid-dreams/agent-kit";
 import { flow } from "@ax-llm/ax";
+import { getTelegramMessagesWithin } from "./telegramStore";
 
 type DiscordAuthor = {
   id: string;
@@ -476,6 +477,208 @@ addEntrypoint({
       }
 
       console.error("[discord-summary-agent] LLM flow error:", errorDetails);
+      discordSummaryFlow.resetUsage();
+
+      const fallbackSummary = conversation
+        .split("\n")
+        .slice(0, 5)
+        .join("\n")
+        .trim();
+
+      const fallbackText =
+        fallbackSummary ||
+        `Messages retrieved (${rangeLabel}), but failed to generate AI summary: ${error?.message || String(error)}`;
+
+      return {
+        output: {
+          summary: finalizeSummary(
+            fallbackText,
+            lookbackMinutes,
+            rangeLabel,
+            conversationEntries
+          ),
+          actionables: [],
+        },
+        model: "axllm-fallback",
+      };
+    }
+  },
+});
+
+addEntrypoint({
+  key: "summarise telegram chat",
+  description:
+    "Summarise a Telegram chat by providing the chat ID and lookback window.",
+  input: z
+    .object({
+      chatId: z
+        .string()
+        .min(1, { message: "Provide the Telegram chat ID." })
+        .describe("Telegram chat ID to summarise."),
+      lookbackMinutes: z
+        .coerce.number()
+        .int({ message: "Lookback minutes must be a whole number." })
+        .min(1, { message: "Lookback window must be at least 1 minute." })
+        .max(1440 * 14, {
+          message: "Lookback window is capped at 14 days (20,160 minutes).",
+        })
+        .describe(
+          "Number of minutes prior to now to include in the summary window."
+        )
+        .optional(),
+    })
+    .superRefine((value, ctx) => {
+      if (!value.chatId.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Provide a valid Telegram chat ID.",
+          path: ["chatId"],
+        });
+      }
+    }),
+  price: process.env.ENTRYPOINT_PRICE || "0.10",
+  output: z.object({
+    summary: z.string(),
+    actionables: z.array(z.string()),
+  }),
+  async handler(ctx) {
+    const chatIdRaw = ctx.input.chatId.trim();
+    const chatNumeric = Number(chatIdRaw);
+    if (!Number.isFinite(chatNumeric)) {
+      throw new Error("Invalid Telegram chat ID provided.");
+    }
+
+    const lookbackMinutes =
+      typeof ctx.input.lookbackMinutes === "number"
+        ? ctx.input.lookbackMinutes
+        : 60;
+
+    const messages = getTelegramMessagesWithin(chatNumeric, lookbackMinutes);
+    if (!messages.length) {
+      return {
+        output: {
+          summary: `No Telegram messages found in chat ${chatIdRaw} for the last ${lookbackMinutes} minutes.`,
+          actionables: [],
+        },
+        model: "telegram-empty",
+      };
+    }
+
+    const sortedMessages = [...messages].sort(
+      (a, b) => a.timestampMs - b.timestampMs
+    );
+
+    const conversationLines = sortedMessages
+      .map((msg) => {
+        const trimmed = msg.text?.trim();
+        if (!trimmed) {
+          return null;
+        }
+        const speaker =
+          msg.authorDisplay ||
+          (msg.authorUsername ? `@${msg.authorUsername}` : undefined) ||
+          (msg.authorId ? `user-${msg.authorId}` : "Member");
+        return `${speaker}: ${trimmed}`;
+      })
+      .filter((line): line is string => Boolean(line));
+
+    if (!conversationLines.length) {
+      return {
+        output: {
+          summary: `Recent Telegram messages in chat ${chatIdRaw} were empty or unsupported for summarisation.`,
+          actionables: [],
+        },
+        model: "telegram-empty",
+      };
+    }
+
+    const conversation = conversationLines.join("\n");
+    const conversationEntries = extractConversationEntries(conversation);
+
+    const start = new Date(sortedMessages[0].timestampMs);
+    const end = new Date(sortedMessages[sortedMessages.length - 1].timestampMs);
+    const rangeLabel = `the last ${lookbackMinutes} minutes`;
+    const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
+    const channelLabel = `Telegram chat ${chatIdRaw}`;
+
+    const llm = axClient.ax;
+    if (!llm) {
+      const fallbackSummary = conversation
+        .split("\n")
+        .slice(0, 5)
+        .join("\n")
+        .trim();
+
+      const fallbackText =
+        fallbackSummary ||
+        `Messages retrieved (${rangeLabel}), but AxFlow is not configured to generate a summary.`;
+
+      return {
+        output: {
+          summary: finalizeSummary(
+            fallbackText,
+            lookbackMinutes,
+            rangeLabel,
+            conversationEntries
+          ),
+          actionables: [],
+        },
+        model: "axllm-fallback",
+      };
+    }
+
+    try {
+      const result = await discordSummaryFlow.forward(llm, {
+        conversation,
+        timeWindow,
+        channelLabel,
+        lookbackMinutes,
+      });
+
+      const usageEntry = discordSummaryFlow.getUsage().at(-1);
+      discordSummaryFlow.resetUsage();
+
+      let summary = result.summary ?? "";
+      summary = summary
+        .replace(/\[\d{4}-\d{2}-\d{2}T[^\]]+\]/g, "")
+        .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "")
+        .replace(/x402 Summariser[^\n]*\n?/gi, "")
+        .trim();
+
+      summary = finalizeSummary(
+        summary,
+        lookbackMinutes,
+        rangeLabel,
+        conversationEntries
+      );
+
+      return {
+        output: {
+          summary: summary || "Summary generated successfully.",
+          actionables: Array.isArray(result.actionables)
+            ? (result.actionables as string[])
+            : [],
+        },
+        model: usageEntry?.model,
+      };
+    } catch (error: any) {
+      const errorDetails: Record<string, unknown> = {
+        message: error?.message,
+        name: error?.name,
+        stack: error?.stack,
+      };
+
+      if (error?.response) {
+        errorDetails.responseStatus = error.response.status;
+        errorDetails.responseData = error.response?.data;
+        errorDetails.responseHeaders = error.response?.headers;
+      }
+
+      if (error?.cause) {
+        errorDetails.cause = error.cause;
+      }
+
+      console.error("[telegram-summary-agent] LLM flow error:", errorDetails);
       discordSummaryFlow.resetUsage();
 
       const fallbackSummary = conversation

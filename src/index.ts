@@ -428,6 +428,74 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
   }
 }
 
+async function handleTelegramCallback(req: Request): Promise<Response> {
+  try {
+    const body = await req.json();
+    const { telegram_token, result } = body;
+
+    if (!telegram_token) {
+      return Response.json({ error: "Missing telegram_token" }, { status: 400 });
+    }
+
+    const decodedToken = decodeURIComponent(telegram_token);
+    const callbackData = pendingTelegramCallbacks.get(decodedToken);
+    if (!callbackData) {
+      console.error(`[telegram-callback] Token not found or expired: ${decodedToken.substring(0, 30)}...`);
+      return Response.json({ error: "Invalid or expired callback token" }, { status: 404 });
+    }
+
+    pendingTelegramCallbacks.delete(decodedToken);
+
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) {
+      console.error("[telegram] TELEGRAM_BOT_TOKEN not set");
+      return Response.json({ error: "Telegram bot token missing" }, { status: 500 });
+    }
+
+    const output = result?.output || result;
+    const summary = output?.summary || "No summary available.";
+    const actionables: string[] = Array.isArray(output?.actionables)
+      ? output.actionables
+      : [];
+
+    let messageText = `✅ Payment Confirmed\n\nSummary (last ${callbackData.lookbackMinutes} minutes):\n${summary}`;
+
+    if (actionables.length > 0) {
+      messageText += `\n\nAction Items:\n${actionables
+        .map((item, idx) => `${idx + 1}. ${item}`)
+        .join("\n")}`;
+    }
+
+    const sendUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const sendResponse = await fetch(sendUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: callbackData.chatId,
+        text: messageText,
+      }),
+    });
+
+    if (!sendResponse.ok) {
+      const errorText = await sendResponse.text();
+      console.error(`[telegram] Failed to send message: ${sendResponse.status} ${errorText}`);
+      return Response.json(
+        { error: "Failed to send result to Telegram" },
+        { status: 500 }
+      );
+    }
+
+    console.log(`[telegram] Successfully sent callback result to chat ${callbackData.chatId}`);
+    return Response.json({ success: true });
+  } catch (error: any) {
+    console.error("[telegram] Error handling callback:", error);
+    return Response.json(
+      { error: "Internal server error", message: error?.message },
+      { status: 500 }
+    );
+  }
+}
+
 const server = Bun.serve({
   port,
   async fetch(req) {
@@ -456,6 +524,10 @@ const server = Bun.serve({
     // Discord payment callback endpoint
     if (url.pathname === "/discord-callback" && req.method === "POST") {
       return handleDiscordCallback(req);
+    }
+
+    if (url.pathname === "/telegram-callback" && req.method === "POST") {
+      return handleTelegramCallback(req);
     }
 
     if (url.pathname === "/assets/x402-card.svg" && req.method === "GET") {
@@ -532,7 +604,10 @@ const server = Bun.serve({
 
       const agentBaseUrl =
         process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
-      const entrypointUrl = `${agentBaseUrl}/entrypoints/summarise%20chat/invoke`;
+      const entrypointPath = usingTelegram
+        ? "summarise%20telegram%20chat"
+        : "summarise%20chat";
+      const entrypointUrl = `${agentBaseUrl}/entrypoints/${entrypointPath}/invoke`;
       const price = process.env.ENTRYPOINT_PRICE || "0.10";
       const currency = process.env.PAYMENT_CURRENCY || "USDC";
 

@@ -1118,7 +1118,9 @@ function normalizeSummaryBullets(
     return (introLine + "\n" + bodyText).trim();
   }
 
-  return introLine + "\n" + filteredBullets.join("\n");
+  const markdownBullets = filteredBullets.map((line) => `- ${line}`);
+
+  return introLine + "\n" + markdownBullets.join("\n");
 }
 
 function transformLineToBullet(

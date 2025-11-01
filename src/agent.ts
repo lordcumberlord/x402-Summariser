@@ -147,63 +147,77 @@ if (!axClient.isConfigured()) {
 const structuredSummarizerPrompt = `SYSTEM PROMPT — Chat Summarizer
 
 You are a chat summarizer for Discord and Telegram.
-Summarize messages concisely in Markdown. Capture important updates and social moments with an appropriate tone. Keep the output under max_chars.
+Summarize messages concisely in Markdown, capturing important updates and social moments with the right tone. Respect max_chars.
+
+Input
+• platform: "discord" or "telegram"
+• window: human-readable timeframe (e.g., "last 60 minutes")
+• max_chars: maximum length for your response
+• messages: array of message objects { id, timestamp, author, is_admin, is_bot, text, attachments[], reactions[], reply_to_id, thread_id, event_type }
 
 Rules
-• Filter noise: Ignore stickers, emoji-only posts, bot commands, reposts, join/leave notices, duplicates.
-• Group threads: Use reply_to_id or thread_id to cluster messages.
-• Score messages with two metrics:
-  1) Importance Score:
-     +3 decision, policy change, or escalation
-     +3 task with owner/date
-     +2 answer that unblocks work
-     +2 meeting scheduled or incident resolved
-     +2 metrics/results shared
-     +1 proposal or next step
-     +1 admin/lead guidance
-     +1 ≥5 reactions or replies
-     +1 attachment with meaningful context
-     −2 off-topic or repeated content
-     −1 bare link without context
-  2) Social Impact Score:
-     +3 ≥5 reactions (any emoji)
-     +3 ≥3 replies within 10 minutes
-     +2 humor markers ("haha", "lol", "lmao", "😂", "🤣", "😭", "💀", "🖕🏻", "roast", "ironic", "meme")
-     +2 ironic or self-deprecating tone (e.g., “fooling you all…”, “finally rug you”)
-     +1 meme/gif with caption
-     +1 regular or admin joking
-     +1 multiple users respond positively
+• Filter noise: ignore stickers, emoji-only posts, bot commands, reposts, join/leave notices, duplicates.
+• Group threads: cluster related content using reply_to_id or thread_id.
+• Score each message twice:
+  Importance Score
+    +3 decision/policy change/escalation
+    +3 task with owner/date
+    +2 answer that unblocks work
+    +2 meeting scheduled or incident resolved
+    +2 metrics/results shared
+    +1 proposal or next step
+    +1 admin/lead guidance
+    +1 ≥5 reactions or replies
+    +1 attachment with meaningful context
+    −2 off-topic or repeated content
+    −1 bare link without context
+  Social Impact Score
+    +3 ≥5 reactions (any emoji)
+    +3 ≥3 replies within 10 minutes
+    +2 humor/tone cue (see below)
+    +1 ≥2 replies (even without reactions)
+    +1 meme/gif/image with caption
+    +1 regular or admin joking
+
+Humor & Tone Cues (binary, each adds +2 Social Impact and forces score ≥3)
+• Mock-confessional / irony phrases ("fooling you all", "finally rug", "confession", "gotcha", "I admit", "I lied")
+• Playful brag / self-deprecation ("I'm the villain", "what have I done", "I'm a menace", "I'm not sorry")
+• Edgy/roast markers ("roast", "ratio", "clowned", "villain arc", "🖕")
+• Money gag patterns (\$\d+(?:\.\d+)? , "tenny", "centos", "0.10")
+• Exaggeration/time flex (“for X years”, “at last”, “finally” in a non-task sentence)
 
 Mode Selection
-• Informational Mode if any topic has Importance ≥ 4.
-• Social Mode if no topic qualifies but any message has Social Impact ≥ 3.
-• Quiet Mode if total messages < 5 and no engagement.
+• Informational Mode when any topic has Importance ≥ 4.
+• Social Mode when Informational does not trigger but any message has Social Impact ≥ 2 OR total messages ≥ 6.
+• Quiet Mode only when total messages < 3, no Humor/Tone cues fired, AND no message has a reply.
+• Guardrail: if any Humor/Tone cue fires, never choose Quiet Mode.
 
 Output Requirements
-• Use Markdown tailored to the platform (Discord/Telegram). Keep bullets short.
+• Use Markdown for the target platform; keep bullets short.
 • Bold decisions, tasks, owners, and dates.
-• Redact sensitive data; paraphrase long quotes.
-• Prioritize (in this order): decisions → tasks → humor → tone → silence.
-• If laughter or energy exists, never output the quiet message.
+• Redact sensitive details; paraphrase long quotes.
+• Prioritize decisions → tasks → humor → tone → silence.
+• Anti-brutal safeguard: never output "Quiet hour" when any message within the window has length ≥ 60 characters, or contains any emoji, or has ≥1 reply. Instead, fall back to Social Mode with a single highlight if needed.
 
-Informational Mode
-• Group content by topic. Each topic: 1–3 bullets covering decisions, tasks (with owners/dates), key results.
-• Add an “Unresolved” section if open questions remain.
-• End with “Links/Files” listing only relevant items.
+Informational Mode Output
+• Group by topic; each topic gets 1–3 bullets covering decisions, tasks (with owners/dates), and key results.
+• Include an "Unresolved" section for open questions.
+• Finish with “Links/Files” referencing only items mentioned.
 
-Social Mode
-• Start with one-sentence mood summary.
-• Provide up to two bullets under **Social Highlights:** capturing the most engaging or humorous moments.
-• Conclude with \`_Mood: <descriptor>_\` (e.g., "lighthearted and friendly").
+Social Mode Output
+• Begin with a one-sentence mood summary.
+• Then list **Social Highlights:** with up to two bullets describing the top social moments (ties → newest, then replies over reactions). Paraphrase neutrally.
+• If only one highlight exists, still produce Social Mode.
+• End with the mood line \`_Mood: <descriptor>_\` (e.g., lighthearted and friendly).
 
-Quiet Mode
-• If truly inactive, output \`_Quiet hour — no notable updates or chatter._\`
+Quiet Mode Output
+• Only when conditions above hold; respond with \`_Quiet hour — no notable updates or chatter._\`
 
 General Guidelines
 • Stay within max_chars.
-• Don’t wrap the entire output in code fences.
-• Keep tone neutral/positive; no sarcasm.
-• Never return “quiet hour” if the chat shows humor or energy.
+• Do not wrap the entire output in code fences.
+• Keep tone positive/neutral; no sarcasm.
+• Never emit "Quiet hour" when the guardrail conditions are violated.
 `;
 
 const structuredSummarizerSignature =
@@ -654,6 +668,15 @@ addEntrypoint({
       return trimmed && !trimmed.startsWith("/");
     });
     if (meaningfulMessages.length < 3) {
+      if (shouldForceSocialTelegram(meaningfulMessages)) {
+        return {
+          output: {
+            summary: buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+            actionables: [],
+          },
+          model: "telegram-social-fallback",
+        };
+      }
       return {
         output: {
           summary: `Quiet hour — no notable updates or chatter.`,
@@ -693,15 +716,42 @@ addEntrypoint({
       });
 
       const summary = (result.summary ?? "").trim();
+      if (!summary) {
+        if (shouldForceSocialTelegram(meaningfulMessages)) {
+          return {
+            output: {
+              summary: buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+              actionables: [],
+            },
+            model: "telegram-social-fallback",
+          };
+        }
+        return {
+          output: {
+            summary: `Quiet hour — no notable updates or chatter.`,
+            actionables: [],
+          },
+          model: "structured-summary",
+        };
+      }
       return {
         output: {
-          summary: summary || `Quiet hour — no notable updates or chatter.`,
+          summary,
           actionables: [],
         },
         model: "structured-summary",
       };
     } catch (error: any) {
       console.error("[telegram-summary-agent] LLM flow error:", error);
+      if (shouldForceSocialTelegram(meaningfulMessages)) {
+        return {
+          output: {
+            summary: buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+            actionables: [],
+          },
+          model: "telegram-social-fallback",
+        };
+      }
       return {
         output: {
           summary: `Quiet hour — no notable updates or chatter.`,
@@ -865,6 +915,12 @@ export async function executeSummariseChat(input: {
 
   const llm = axClient.ax;
   if (!llm) {
+    if (shouldForceSocialDiscord(messages)) {
+      return {
+        summary: buildSocialFallbackSummaryFromDiscord(messages),
+        actionables: [],
+      };
+    }
     const fallbackSummary = conversation
       .split("\n")
       .slice(0, 5)
@@ -903,6 +959,12 @@ export async function executeSummariseChat(input: {
 
     const summary = (result.summary ?? "").trim();
     if (!summary) {
+      if (shouldForceSocialDiscord(messages)) {
+        return {
+          summary: buildSocialFallbackSummaryFromDiscord(messages),
+          actionables: [],
+        };
+      }
       return {
         summary: `Quiet hour — no notable updates or chatter.`,
         actionables: [],
@@ -920,7 +982,12 @@ export async function executeSummariseChat(input: {
     };
   } catch (error: any) {
     console.error("[discord-summary-agent] LLM flow error:", error);
-    // Fallback to simple summary if LLM fails
+    if (shouldForceSocialDiscord(messages)) {
+      return {
+        summary: buildSocialFallbackSummaryFromDiscord(messages),
+        actionables: [],
+      };
+    }
     const fallbackSummary = conversation
       .split("\n")
       .slice(0, 5)
@@ -1772,6 +1839,75 @@ function lowercaseFirst(text: string): string {
     return text;
   }
   return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+const EMOJI_REGEX = /[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
+const HUMOR_CUE_REGEXES = [
+  /(fooling you all|finally rug(?:ged)?|confession|gotcha|i admit|i lied)/i,
+  /(villain arc|not sorry|menace|clowned|ratio'?d|roast)/i,
+  /(\$\d+(?:\.\d+)?|tenny|centos|0\.10)/i,
+  /(for \d+ years|at last|finally)/i,
+  /(haha|lol|lmao|😂|🤣|😭|💀|🖕)/i,
+];
+
+function containsEmoji(text: string): boolean {
+  return EMOJI_REGEX.test(text);
+}
+
+function containsHumorCue(text: string): boolean {
+  return HUMOR_CUE_REGEXES.some((regex) => regex.test(text));
+}
+
+function hasRepliesDiscord(message: DiscordMessage): boolean {
+  return Boolean((message as any)?.referenced_message) || Boolean((message as any)?.message_reference?.message_id);
+}
+
+function shouldForceSocialTelegram(messages: TelegramStoredMessage[]): boolean {
+  return messages.some((msg) => {
+    const text = msg.text ?? "";
+    return text.length >= 60 || containsEmoji(text) || containsHumorCue(text) || Boolean(msg.replyToMessageId);
+  });
+}
+
+function shouldForceSocialDiscord(messages: DiscordMessage[]): boolean {
+  return messages.some((msg) => {
+    const text = msg.content ?? "";
+    return text.length >= 60 || containsEmoji(text) || containsHumorCue(text) || hasRepliesDiscord(msg);
+  });
+}
+
+function buildSocialFallbackSummaryFromTelegram(messages: TelegramStoredMessage[]): string {
+  const sorted = [...messages].sort((a, b) => (b.text?.length ?? 0) - (a.text?.length ?? 0));
+  const highlight = sorted[0];
+
+  if (!highlight) {
+    return "Chat stayed lighthearted.\n\n**Social Highlights:**\n- Friendly banter kept the chat active.\n\n_Mood: lighthearted and friendly._";
+  }
+
+  const author = highlight.authorDisplay || (highlight.authorUsername ? `@${highlight.authorUsername}` : "Someone");
+  const snippet = (highlight.text || "").trim();
+  const trimmedSnippet = snippet.length > 120 ? `${snippet.slice(0, 117)}…` : snippet;
+
+  return `Chat stayed lively.\n\n**Social Highlights:**\n- ${author} sparked reactions: "${trimmedSnippet}"\n\n_Mood: lighthearted and friendly._`;
+}
+
+function buildSocialFallbackSummaryFromDiscord(messages: DiscordMessage[]): string {
+  const sorted = [...messages].sort((a, b) => (b.content?.length ?? 0) - (a.content?.length ?? 0));
+  const highlight = sorted[0];
+
+  if (!highlight) {
+    return "Chat stayed lighthearted.\n\n**Social Highlights:**\n- Friendly banter kept the chat active.\n\n_Mood: lighthearted and friendly._";
+  }
+
+  const author =
+    highlight.author?.global_name ||
+    highlight.author?.display_name ||
+    highlight.author?.username ||
+    "Someone";
+  const snippet = (highlight.content || "").trim();
+  const trimmedSnippet = snippet.length > 120 ? `${snippet.slice(0, 117)}…` : snippet;
+
+  return `Chat stayed lively.\n\n**Social Highlights:**\n- ${author} sparked engagement: "${trimmedSnippet}"\n\n_Mood: lighthearted and friendly._`;
 }
 
 async function fetchMessagesBetween({

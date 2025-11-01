@@ -171,22 +171,26 @@ Avoid raw tone labels or mechanical wording.
 
 Action Items
 
-After writing the Highlights, always check for any tasks, assignments, or next steps.
+After writing the Highlights, scan through what you wrote and identify any tasks, assignments, or next steps mentioned.
 
-If at least one exists, create a new section immediately below the Highlights with this exact header and format:
+If at least one task exists:
+1. Keep the task mentioned in the Highlights (it provides context about who assigned it and when).
+2. Extract and list it again in a separate Action Items section below.
+
+Create the Action Items section with this exact format:
 
 **Action Items:**
 • @User to <action> by <date or timeframe>.
 • @User to <action> as discussed.
 
-Do not repeat any task lines in the Highlights above.
+CRITICAL FORMATTING REQUIREMENTS:
+- Action Items section must start on a new line after a blank line.
+- The header **Action Items:** must be bolded and exactly as shown (with colon).
+- Each task must be on its own line with a bullet (•).
+- Extract the task in the simplified format: "@User to <action> by <date>."
+- If there are no tasks at all, omit this entire section.
 
-The Action Items section must:
-
-Start on a new line after a blank line.
-Use the bolded header exactly as shown.
-Contain all clear tasks or follow-ups.
-If there are no tasks, omit this section entirely.
+Example: If highlights say "Cumberlord assigned Bulbhead the task of reporting the death toll by Monday", extract it as "• @Bulbhead to report the death toll by Monday."
 
 No Mood Line
 
@@ -217,11 +221,13 @@ Good evening! Here's a summary of what happened in the last 120 minutes:
 
 • @Orion joked about sending pizza deliveries to Mars, sparking light banter about space logistics.
 
+• @Orion assigned @Lyra the task of confirming the venue booking by Monday.
+
 • The team also discussed preparations for next week's event and assigned follow-ups.
 
 
 
-Action Items:
+**Action Items:**
 
 • @Lyra to confirm venue booking by Monday.
 

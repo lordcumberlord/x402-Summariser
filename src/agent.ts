@@ -144,7 +144,9 @@ if (!axClient.isConfigured()) {
   );
 }
 
-const structuredSummarizerPrompt = `You are a chat summarizer for Discord and Telegram.
+const structuredSummarizerPrompt = `SYSTEM PROMPT — Telegram / Discord Summarizer (Developer Version, v5)
+
+You are a chat summarizer for Discord and Telegram.
 
 Generate a friendly, concise Markdown summary of the provided messages.
 
@@ -162,7 +164,7 @@ Here's a summary of what happened in the last {window_minutes} minutes:
 
 Highlights
 
-Summarize notable discussions, jokes, updates, or events using natural sentences.
+Summarize notable discussions, jokes, or updates using natural sentences.
 Use bullets or short paragraphs as needed.
 Include all meaningful, non-redundant moments within max_chars; no fixed limit.
 Blend informational and social content smoothly.
@@ -171,18 +173,19 @@ Avoid raw tone labels or mechanical wording.
 
 Action Items
 
+If any tasks or assignments exist, place them after the highlights under a header:
+
 **Action Items:**
-- @User to <action> by <date or timeframe>.
-- @User to <action> as discussed.
+• @User to <action> by <date or timeframe>.
+• @User to <action> as discussed.
 
-Collect all clear tasks, assignments, or next steps at the end.
+Collect all clear tasks or next steps here.
 Remove duplicate mentions of these tasks from the Highlights section.
-If no tasks exist, omit this block.
+If no tasks exist, omit this block entirely.
 
-Mood Line
+No Mood Line
 
-End with one short italic line reflecting the overall tone, e.g.
-_Mood: playful and task-focused._
+Omit "Mood:" or tone summaries; tone should be implied through phrasing in the Highlights.
 
 🔹 SUMMARIZATION LOGIC
 
@@ -202,31 +205,21 @@ Quiet condition – only output
 _Quiet hour — no notable updates or chatter._
 if fewer than 3 messages, no replies, no reactions, and no humor detected.
 
-🔹 EXAMPLE (fictional and generic)
+🔹 EXAMPLE (fictional)
 
 Good afternoon! Here's a summary of what happened in the last 90 minutes:
 
-@Nova joked about training dragons in VR, which sparked a lively debate about fire safety in the metaverse.
+• @Nova joked about training dragons in VR, sparking laughter and a short thread about digital fire safety.
 
-@Tinker shared progress on the "Clockwork Phoenix" prototype, noting improved wing stability.
+• @Tinker shared updates on the Clockwork Phoenix prototype, noting improved wing stability.
 
-The guild also discussed plans for next week's digital art showcase.
+• The guild discussed plans for next week's digital art showcase.
 
 Action Items:
 
-@Tinker to upload new schematics by Tuesday.
+• @Tinker to upload new schematics by Tuesday.
 
-@Lyra to post the showcase schedule in #announcements.
-
-_Mood: creative and upbeat._
-
-⚙️ NOTES
-
-Keep summaries succinct, human, and context-aware.
-Always start with a time-based greeting.
-Group all tasks under Action Items at the end.
-If humor, personality, or teamwork is visible, reflect it in the tone line.
-Never output raw category words like "playful roast."
+• @Lyra to post the showcase schedule in #announcements.
 `;
 
 const structuredSummarizerSignature =
@@ -1879,14 +1872,14 @@ function buildSocialFallbackSummaryFromTelegram(messages: TelegramStoredMessage[
   const highlight = sorted[0];
 
   if (!highlight) {
-    return "Chat stayed lighthearted.\n\n**Social Highlights:**\n- Friendly banter kept the chat active.\n\n_Mood: lighthearted and friendly._";
+    return "Chat stayed lighthearted with some friendly banter.";
   }
 
   const author = highlight.authorDisplay || (highlight.authorUsername ? `@${highlight.authorUsername}` : "Someone");
   const snippet = (highlight.text || "").trim();
   const trimmedSnippet = snippet.length > 120 ? `${snippet.slice(0, 117)}…` : snippet;
 
-  return `Chat stayed lively.\n\n**Social Highlights:**\n- ${author} sparked reactions: "${trimmedSnippet}"\n\n_Mood: lighthearted and friendly._`;
+  return `Chat stayed lively. ${author} sparked reactions: "${trimmedSnippet}"`;
 }
 
 function buildSocialFallbackSummaryFromDiscord(messages: DiscordMessage[]): string {
@@ -1894,7 +1887,7 @@ function buildSocialFallbackSummaryFromDiscord(messages: DiscordMessage[]): stri
   const highlight = sorted[0];
 
   if (!highlight) {
-    return "Chat stayed lighthearted.\n\n**Social Highlights:**\n- Friendly banter kept the chat active.\n\n_Mood: lighthearted and friendly._";
+    return "Chat stayed lighthearted with some friendly banter.";
   }
 
   const author =
@@ -1905,7 +1898,7 @@ function buildSocialFallbackSummaryFromDiscord(messages: DiscordMessage[]): stri
   const snippet = (highlight.content || "").trim();
   const trimmedSnippet = snippet.length > 120 ? `${snippet.slice(0, 117)}…` : snippet;
 
-  return `Chat stayed lively.\n\n**Social Highlights:**\n- ${author} sparked engagement: "${trimmedSnippet}"\n\n_Mood: lighthearted and friendly._`;
+  return `Chat stayed lively. ${author} sparked engagement: "${trimmedSnippet}"`;
 }
 
 async function fetchMessagesBetween({

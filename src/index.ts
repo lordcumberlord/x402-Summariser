@@ -508,12 +508,18 @@ const server = Bun.serve({
 
     // Payment page - handles GET requests and shows payment UI
     if (url.pathname === "/pay" && req.method === "GET") {
+      const source = url.searchParams.get("source") ?? "discord";
       const channelId = url.searchParams.get("channelId");
+      const chatId = url.searchParams.get("chatId");
       const serverId = url.searchParams.get("serverId");
       const lookbackMinutesParam = url.searchParams.get("lookbackMinutes");
       const discordCallback = url.searchParams.get("discord_callback");
+      const telegramCallback = url.searchParams.get("telegram_callback");
 
-      if (!channelId || lookbackMinutesParam === null) {
+      const usingTelegram = source === "telegram";
+      const primaryId = usingTelegram ? chatId : channelId;
+
+      if (!primaryId || lookbackMinutesParam === null) {
         return Response.json({ error: "Missing required parameters" }, { status: 400 });
       }
 
@@ -524,15 +530,35 @@ const server = Bun.serve({
 
       const { minutes: lookbackMinutes } = lookbackValidation;
 
-      const agentBaseUrl = process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
+      const agentBaseUrl =
+        process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
       const entrypointUrl = `${agentBaseUrl}/entrypoints/summarise%20chat/invoke`;
       const price = process.env.ENTRYPOINT_PRICE || "0.10";
       const currency = process.env.PAYMENT_CURRENCY || "USDC";
-      
+
+      const heading = usingTelegram
+        ? "💳 Pay to Summarise Telegram Chat"
+        : "💳 Pay to Summarise Discord Channel";
+      const entityLabel = usingTelegram ? "Chat ID" : "Channel ID";
+      const postPaymentPrompt = usingTelegram
+        ? "After payment, your summary will automatically appear in Telegram."
+        : "After payment, your summary will automatically appear in Discord.";
+
+      const pageConfig = {
+        source,
+        channelId,
+        chatId,
+        serverId,
+        lookbackMinutes,
+        entrypointUrl,
+        discordCallback,
+        telegramCallback,
+      };
+
       return new Response(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Pay to Summarise Discord Channel</title>
+  <title>${heading.replace(/<[^>]+>/g, "")}</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
@@ -546,13 +572,13 @@ const server = Bun.serve({
 </head>
 <body>
   <div class="container">
-    <h1>💳 Pay to Summarise Discord Channel</h1>
+    <h1>${heading}</h1>
     <div class="info">
       <p><strong>Price:</strong> $${price} ${currency}</p>
-      <p><strong>Channel ID:</strong> ${channelId}</p>
+      <p><strong>${entityLabel}:</strong> ${primaryId}</p>
       <p><strong>Lookback:</strong> ${lookbackMinutes} minutes</p>
     </div>
-    <p>Click below to pay via x402. After payment, your summary will automatically appear in Discord.</p>
+    <p>Click below to pay via x402. ${postPaymentPrompt}</p>
     <button class="button" onclick="pay()">Pay $${price} ${currency}</button>
     <div id="status" style="margin-top: 20px;"></div>
   </div>
@@ -569,6 +595,10 @@ const server = Bun.serve({
     }
   </script>
   <script type="module">
+    const PAGE_CONFIG = ${JSON.stringify(pageConfig)};
+    PAGE_CONFIG.price = '${price}';
+    PAGE_CONFIG.currency = '${currency}';
+
     let wrapFetchWithPayment;
     let createWalletClient;
     let custom;
@@ -601,6 +631,7 @@ const server = Bun.serve({
     })();
     
     async function pay() {
+      const cfg = PAGE_CONFIG;
       const status = document.getElementById('status');
       
       // Wait a bit for module to load if it hasn't yet
@@ -712,9 +743,27 @@ const server = Bun.serve({
         // Note: x402 uses EIP-3009 for gasless transactions - facilitator pays gas
         const x402Fetch = wrapFetchWithPayment(fetch, walletClient, BigInt(100000));
         
-        const entrypointUrl = '${entrypointUrl}';
+        const entrypointUrl = cfg.entrypointUrl;
         
         status.innerHTML = '<p>💳 Processing payment (gasless via facilitator)...</p>';
+        
+        const requestInput = cfg.source === 'telegram'
+          ? {
+              chatId: cfg.chatId,
+              lookbackMinutes: cfg.lookbackMinutes,
+              source: 'telegram'
+            }
+          : {
+              channelId: cfg.channelId,
+              serverId: cfg.serverId || undefined,
+              lookbackMinutes: cfg.lookbackMinutes
+            };
+
+        console.log('📋 Request details:', {
+          url: entrypointUrl,
+          method: 'POST',
+          input: requestInput,
+        });
         
         // Check USDC balance before payment to verify transaction processing
         const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; // USDC on Base
@@ -744,11 +793,7 @@ const server = Bun.serve({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              input: {
-                channelId: '${channelId}',
-                serverId: '${serverId || ""}',
-                lookbackMinutes: ${lookbackMinutes},
-              },
+              input: requestInput,
             }),
           });
           
@@ -818,7 +863,8 @@ const server = Bun.serve({
         }
         
         if (!txHash && data.context && data.context.payment) {
-          txHash = data.context.payment.txHash || data.context.payment.transactionHash || data.context.payment.hash;
+          const paymentCtx = data.context.payment;
+          txHash = paymentCtx.txHash || paymentCtx.transactionHash || paymentCtx.hash;
         }
         
         // Check for any field containing "tx" or "hash"
@@ -835,10 +881,11 @@ const server = Bun.serve({
         }
         
         const successMarkup = (hash) => {
+          const destination = cfg.source === 'telegram' ? 'Telegram' : 'Discord';
           if (!hash) {
             return '<div style="color: #117a39;">' +
               '<p style="font-size: 20px; margin: 0 0 8px;">✅ Payment complete!</p>' +
-              '<p style="font-size: 13px; color: #1f5132; margin: 0;">Check Discord for your summary.</p>' +
+              '<p style="font-size: 13px; color: #1f5132; margin: 0;">Check ' + destination + ' for your summary.</p>' +
               '</div>';
           }
 
@@ -846,7 +893,7 @@ const server = Bun.serve({
           return '<div style="color: #117a39;">' +
             '<p style="font-size: 20px; margin: 0 0 8px;">✅ Payment complete!</p>' +
             '<p style="margin: 0 0 12px;">View on BaseScan: <a href="' + explorer + '" target="_blank" rel="noopener" style="color: #0b5e27;">' + hash + '</a></p>' +
-            '<p style="font-size: 13px; color: #1f5132; margin: 0;">Check Discord for your summary.</p>' +
+            '<p style="font-size: 13px; color: #1f5132; margin: 0;">Check ' + destination + ' for your summary.</p>' +
             '</div>';
         };
 
@@ -858,18 +905,33 @@ const server = Bun.serve({
         }
         
         if (response.ok) {
-          
-          ${discordCallback ? 'fetch(\'/discord-callback\', {' +
-            'method: \'POST\',' +
-            'headers: { \'Content-Type\': \'application/json\' },' +
-            'body: JSON.stringify({' +
-            'discord_token: \'' + discordCallback + '\',' +
-            'result: data' +
-            '})' +
-            '}).catch(function(err) {' +
-            'console.error(\'❌ Callback error:\', err);' +
-            'status.innerHTML += \'<p style="color: orange;">⚠️ Payment successful but failed to send to Discord. Please contact support.</p>\';' +
-            '});' : ''}
+          if (cfg.discordCallback) {
+            fetch('/discord-callback', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                discord_token: cfg.discordCallback,
+                result: data,
+              }),
+            }).catch(function(err) {
+              console.error('❌ Callback error:', err);
+              status.innerHTML += '<p style="color: orange;">⚠️ Payment successful but failed to send to Discord. Please contact support.</p>';
+            });
+          }
+
+          if (cfg.telegramCallback) {
+            fetch('/telegram-callback', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                telegram_token: cfg.telegramCallback,
+                result: data,
+              }),
+            }).catch(function(err) {
+              console.error('❌ Telegram callback error:', err);
+              status.innerHTML += '<p style="color: orange;">⚠️ Payment successful but failed to send to Telegram. Please contact support.</p>';
+            });
+          }
         } else if (response.status === 402) {
           status.innerHTML = '<p style="color: orange;">💳 Payment required. Please connect your x402 wallet and approve the transaction.</p>';
         } else {
@@ -1412,11 +1474,17 @@ console.log(
 );
 
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+const publicBaseUrl =
+  process.env.PUBLIC_WEB_URL ||
+  process.env.AGENT_URL ||
+  `http://${server.hostname}:${server.port}`;
+
 if (telegramToken) {
-  const publicBaseUrl =
-    process.env.PUBLIC_WEB_URL ||
-    process.env.AGENT_URL ||
-    `http://${server.hostname}:${server.port}`;
+  if (!publicBaseUrl.startsWith("http")) {
+    console.warn(
+      "[telegram] PUBLIC_WEB_URL or AGENT_URL should be set to a full URL for Telegram payment links"
+    );
+  }
 
   (async () => {
     try {
@@ -1425,11 +1493,11 @@ if (telegramToken) {
         baseUrl: publicBaseUrl,
       });
       await bot.start();
-      console.log("🤖 Telegram bot polling started");
+      console.log("🤖 Telegram summariser bot ready");
     } catch (err) {
       console.error("[telegram] Failed to start bot", err);
     }
   })();
 } else {
-  console.log("[telegram] TELEGRAM_BOT_TOKEN not set. Skipping bot startup.");
+  console.log("[telegram] TELEGRAM_BOT_TOKEN not set; Telegram bot disabled");
 }

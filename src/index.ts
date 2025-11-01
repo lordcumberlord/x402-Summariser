@@ -4,6 +4,13 @@ import { findMatchingPaymentRequirements } from "x402/shared";
 import { useFacilitator } from "x402/verify";
 import { settleResponseHeader } from "x402/types";
 import nacl from "tweetnacl";
+import { MAX_LOOKBACK_MINUTES, validateLookback } from "./lookback";
+import { PAYMENT_CALLBACK_EXPIRY_MS } from "./constants";
+import {
+  pendingDiscordCallbacks,
+  pendingTelegramCallbacks,
+} from "./pending";
+import { createTelegramBot } from "./telegram";
 
 const port = Number(process.env.PORT ?? 8787);
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
@@ -12,31 +19,7 @@ const DISCORD_API_DEFAULT_BASE = "https://discord.com/api/v10";
 // Payment constants
 const USDC_DECIMALS = 6;
 const DEFAULT_PRICE_USDC = BigInt(100000); // 0.10 USDC (100000 / 10^6)
-const PAYMENT_CALLBACK_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
-const MAX_LOOKBACK_MINUTES = 8 * 60; // 8 hours
 const EPHEMERAL_FLAG = 1 << 6;
-
-function validateLookback(rawValue: unknown) {
-  const numeric = Number(rawValue);
-
-  if (!Number.isFinite(numeric)) {
-    return { error: "Lookback must be provided as a number of minutes." } as const;
-  }
-
-  const minutes = Math.floor(numeric);
-
-  if (minutes <= 0) {
-    return { error: "Lookback must be at least 1 minute." } as const;
-  }
-
-  if (minutes > MAX_LOOKBACK_MINUTES) {
-    return {
-      error: `Lookback may not exceed ${MAX_LOOKBACK_MINUTES} minutes (8 hours).`,
-    } as const;
-  }
-
-  return { minutes } as const;
-}
 
 function makeEphemeralResponse(message: string): Response {
   return Response.json({
@@ -48,22 +31,17 @@ function makeEphemeralResponse(message: string): Response {
   });
 }
 
-// Store Discord webhook info temporarily for payment callbacks
-// Map: interaction_token -> { application_id, channel_id, guild_id, lookbackMinutes }
-const pendingDiscordCallbacks = new Map<string, {
-  applicationId: string;
-  channelId: string;
-  guildId: string | null;
-  lookbackMinutes: number;
-  expiresAt: number;
-}>();
-
 // Clean up expired callbacks every 30 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [token, data] of pendingDiscordCallbacks.entries()) {
     if (data.expiresAt < now) {
       pendingDiscordCallbacks.delete(token);
+    }
+  }
+  for (const [token, data] of pendingTelegramCallbacks.entries()) {
+    if (data.expiresAt < now) {
+      pendingTelegramCallbacks.delete(token);
     }
   }
 }, 30 * 60 * 1000);
@@ -1432,3 +1410,26 @@ console.log(
 console.log(
   `📡 Discord interactions: http://${server.hostname}:${server.port}/interactions`
 );
+
+const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+if (telegramToken) {
+  const publicBaseUrl =
+    process.env.PUBLIC_WEB_URL ||
+    process.env.AGENT_URL ||
+    `http://${server.hostname}:${server.port}`;
+
+  (async () => {
+    try {
+      const bot = createTelegramBot({
+        token: telegramToken,
+        baseUrl: publicBaseUrl,
+      });
+      await bot.start();
+      console.log("🤖 Telegram bot polling started");
+    } catch (err) {
+      console.error("[telegram] Failed to start bot", err);
+    }
+  })();
+} else {
+  console.log("[telegram] TELEGRAM_BOT_TOKEN not set. Skipping bot startup.");
+}

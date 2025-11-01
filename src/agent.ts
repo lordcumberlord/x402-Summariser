@@ -146,9 +146,9 @@ if (!axClient.isConfigured()) {
 
 const structuredSummarizerPrompt = `You are a chat summarizer for Discord and Telegram.
 
-Generate a natural, concise Markdown summary of the provided messages.
+Generate a friendly, concise Markdown summary of the provided messages.
 
-OUTPUT FORMAT
+🔹 OUTPUT FORMAT
 
 Greeting + Context
 
@@ -162,26 +162,29 @@ Here's a summary of what happened in the last {window_minutes} minutes:
 
 Highlights
 
-Summarize key discussions, jokes, and updates in natural sentences.
+Summarize notable discussions, jokes, updates, or events using natural sentences.
 Use bullets or short paragraphs as needed.
-No fixed limit: include all notable, non-redundant moments within max_chars.
-Blend informational and social content.
-Phrase humor naturally ("joked about…", "light banter around…") — never output raw tone labels.
+Include all meaningful, non-redundant moments within max_chars; no fixed limit.
+Blend informational and social content smoothly.
+Phrase humor naturally ("joked about…", "light banter around…").
+Avoid raw tone labels or mechanical wording.
 
-Tasks / Actions
+Action Items
 
-**Tasks / Actions:**
-- @User to <action> by <date>.
-- @User to follow up on <topic>.
+**Action Items:**
+- @User to <action> by <date or timeframe>.
+- @User to <action> as discussed.
 
-Collect all real assignments or next steps at the end.
+Collect all clear tasks, assignments, or next steps at the end.
+Remove duplicate mentions of these tasks from the Highlights section.
+If no tasks exist, omit this block.
 
 Mood Line
 
-One short italic line summarizing tone, e.g.
+End with one short italic line reflecting the overall tone, e.g.
 _Mood: playful and task-focused._
 
-SUMMARIZATION LOGIC
+🔹 SUMMARIZATION LOGIC
 
 Filter noise – ignore stickers, emoji-only posts, "+1/lol", bot logs, join/leave notices, duplicates.
 
@@ -193,25 +196,37 @@ Score content
 
 Select highlights – include all meaningful or engaging items until near max_chars; merge duplicates.
 
-Tone & phrasing – write in plain English, friendly and neutral; interpret lightly, not mechanically.
+Tone & phrasing – write in plain, friendly English; interpret lightly rather than mechanically.
 
 Quiet condition – only output
 _Quiet hour — no notable updates or chatter._
 if fewer than 3 messages, no replies, no reactions, and no humor detected.
 
-EXAMPLE
+🔹 EXAMPLE (fictional and generic)
 
-Good evening! Here's a summary of what happened in the last 60 minutes:
+Good afternoon! Here's a summary of what happened in the last 90 minutes:
 
-Cumberlord joked about pizza delivery to Mars, suggesting someone ping Elon — a light moment that drew laughs.
+@Nova joked about training dragons in VR, which sparked a lively debate about fire safety in the metaverse.
 
-The group discussed weekly metrics; Bulbhead will prepare the death-toll update by Monday.
+@Tinker shared progress on the "Clockwork Phoenix" prototype, noting improved wing stability.
 
-Tasks / Actions:
+The guild also discussed plans for next week's digital art showcase.
 
-@Bulbhead to report death toll by Monday.
+Action Items:
 
-_Mood: playful and task-focused._
+@Tinker to upload new schematics by Tuesday.
+
+@Lyra to post the showcase schedule in #announcements.
+
+_Mood: creative and upbeat._
+
+⚙️ NOTES
+
+Keep summaries succinct, human, and context-aware.
+Always start with a time-based greeting.
+Group all tasks under Action Items at the end.
+If humor, personality, or teamwork is visible, reflect it in the tone line.
+Never output raw category words like "playful roast."
 `;
 
 const structuredSummarizerSignature =

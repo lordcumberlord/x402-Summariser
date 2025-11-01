@@ -1085,9 +1085,9 @@ function normalizeSummaryBullets(
     conversationEntries.map((entry) => normalizeName(entry.speaker))
   );
 
-  const lines = trimmed.split(/\n+/);
-  let introLine = lines[0].trim();
-  let bodyText = lines.slice(1).join("\n").trim();
+  const rawLines = trimmed.split(/\n+/);
+  let introLine = rawLines[0].trim();
+  let bodyText = rawLines.slice(1).join("\n").trim();
 
   const introColonIndex = introLine.indexOf(":");
   if (introColonIndex !== -1) {

@@ -156,8 +156,6 @@ Action Items
 
 🔹 OUTPUT TEMPLATE
 
-✅ <title or emoji if provided>
-
 <greeting> Here's a summary of what happened in the last {window_minutes} minutes:
 
 **Highlights:**
@@ -237,8 +235,6 @@ output only
 _Quiet hour — no notable updates or chatter._
 
 🔹 EXAMPLE (fictional)
-
-✅ Summary Report
 
 Good evening! Here's a summary of what happened in the last 120 minutes:
 

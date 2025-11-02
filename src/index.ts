@@ -513,7 +513,13 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
     }
 
     const output = result?.output || result;
-    let summary = (output?.summary || "").trim();
+    let summary = (output?.summary || output?.text || "").trim();
+    
+    // Debug logging
+    console.log(`[telegram-callback] Raw result keys:`, Object.keys(result || {}));
+    console.log(`[telegram-callback] Raw output keys:`, Object.keys(output || {}));
+    console.log(`[telegram-callback] Raw summary length: ${summary.length}`);
+    console.log(`[telegram-callback] Summary preview: ${summary.substring(0, 200)}`);
     
     // Fix greeting if it appears as a bullet point - remove bullet and place on new line
     summary = summary.replace(/^•\s*(Good (morning|afternoon|evening)![^\n]*)/m, "$1");
@@ -544,7 +550,10 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
       .replace(/To summarise this channel, please pay.*?via x402\./gi, "")
       .trim();
     
+    console.log(`[telegram-callback] Summary after cleaning length: ${summary.length}`);
+    
     if (!summary) {
+      console.warn(`[telegram-callback] Summary was empty after cleaning, using fallback message`);
       summary = "No material updates or chatter in this window.";
     }
 

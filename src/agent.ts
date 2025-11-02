@@ -219,6 +219,8 @@ Selection
 
 Start with items scoring Combined ≥3.
 
+Prioritize high engagement: Messages with ≥5 reactions or ≥3 replies should almost always be included, even if importance is low. These reflect what the community found notable or entertaining.
+
 If few items qualify, include ≥2 or ≥1 that add value or colour.
 
 Prefer topic diversity; stop when the key moments are covered within max_chars.
@@ -823,6 +825,17 @@ addEntrypoint({
     const summarizerMessages = buildTelegramSummarizerMessages(meaningfulMessages);
     const windowLabel = `last ${lookbackMinutes} minutes`;
     const maxChars = 1100;
+    
+    // Log reaction counts for debugging
+    const messagesWithReactions = summarizerMessages.filter(msg => 
+      msg.reactions && msg.reactions.length > 0 && msg.reactions[0].count >= 5
+    );
+    if (messagesWithReactions.length > 0) {
+      console.log(`[telegram-entrypoint] Messages with ≥5 reactions:`, 
+        messagesWithReactions.map(m => ({ text: m.text.substring(0, 50), reactions: m.reactions }))
+      );
+    }
+    
     const payload = buildSummarizerPayload(
       "telegram",
       windowLabel,

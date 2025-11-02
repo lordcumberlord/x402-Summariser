@@ -392,8 +392,9 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
     // Remove "Hello!" style greetings (should use time-based greetings)
     summary = summary.replace(/^Hello!\s*Here is what happened[^\n]*\n?/im, "");
     
-    // Remove payment request messages that might have been included in the summary
+    // Remove payment-related prefixes that might have been included in the summary
     summary = summary
+      .replace(/^✅\s*Payment (Confirmed|Required)\s*\n?\n?/gim, "") // Remove "✅ Payment Confirmed" or "✅ Payment Required" at start
       .replace(/💳\s*\*\*Payment Required\*\*[\s\S]*?automatically\./gi, "")
       .replace(/🔗\s*\*\*Pay.*?\n/gi, "")
       .replace(/https?:\/\/[^\s]*pay[^\s]*/gi, "")
@@ -411,7 +412,7 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
       summary = "No material updates or chatter in this window.";
     }
     
-    const content = `✅ Payment Confirmed\n\n${summary}`.trim();
+    const content = summary.trim();
     
     // Send to Discord - try to complete it quickly, but don't block forever
     // Use Promise.race with a timeout so we return within 5 seconds max
@@ -532,13 +533,22 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
     }).replace(/\n\n+/g, "\n\n").trim(); // Clean up extra blank lines
     
     // Remove "Hello!" style greetings (should use time-based greetings)
-    summary = summary.replace(/^Hello!\s*Here is what happened[^\n]*\n?/im, "").trim();
+    summary = summary.replace(/^Hello!\s*Here is what happened[^\n]*\n?/im, "");
+    
+    // Remove payment-related prefixes that might have been included in the summary
+    summary = summary
+      .replace(/^✅\s*Payment (Confirmed|Required)\s*\n?\n?/gim, "") // Remove "✅ Payment Confirmed" or "✅ Payment Required" at start
+      .replace(/💳\s*\*\*Payment Required\*\*[\s\S]*?automatically\./gi, "")
+      .replace(/🔗\s*\*\*Pay.*?\n/gi, "")
+      .replace(/https?:\/\/[^\s]*pay[^\s]*/gi, "")
+      .replace(/To summarise this channel, please pay.*?via x402\./gi, "")
+      .trim();
     
     if (!summary) {
       summary = "No material updates or chatter in this window.";
     }
 
-    const messageText = `✅ Payment Confirmed\n\n${summary}`.trim();
+    const messageText = summary.trim();
 
     // Send to Telegram - try to complete it quickly, but don't block forever
     try {

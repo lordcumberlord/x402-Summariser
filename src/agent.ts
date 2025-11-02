@@ -168,9 +168,7 @@ Never output empty headers.
 
 🗣️ GREETING AND CONTEXT
 
-Start with any provided title line (e.g. ✅ Payment Confirmed).
-
-Then choose a greeting by time of day:
+Start directly with a greeting by time of day (no prefixes):
 
 04:00–11:59 → Good morning!
 
@@ -313,8 +311,6 @@ Always end with the witty closer.
 
 Example A – Active session
 
-✅ Payment Confirmed
-
 Good evening! Here's a summary of what happened in the last 180 minutes:
 
 **Highlights:**
@@ -337,15 +333,11 @@ _All signal, no noise — rare sight in crypto._
 
 Example B – Quiet window
 
-✅ Payment Confirmed
-
 Good afternoon! Here's a summary of what happened in the last 30 minutes:
 
 _Pretty quiet — vibes up, volume down._
 
 Example C – Balanced community chat
-
-✅ Summary Report
 
 Good morning! Here's a summary of what happened in the last 480 minutes:
 

@@ -1373,15 +1373,15 @@ const server = Bun.serve({
         <div class="logo-face"><span class="logo-eye"></span><span class="logo-eye"></span></div>
       </div>
       <h1>x402 Summariser Bot</h1>
-      <p class="lead">Bring instant AI summaries to your community and pay via x402 with each recap. Install the Discord bot today and get channel highlights on demand, with Telegram support arriving soon.</p>
+      <p class="lead">Bring instant AI summaries to your community and pay via x402 with each recap. Install the Discord or Telegram bot and get channel highlights on demand.</p>
     </header>
 
     <section>
       <h2>How It Works</h2>
       <ol class="steps">
-        <li>Install the bot into your Discord server and choose the channel you want to summarise.</li>
+        <li>Install the bot into your Discord server or Telegram chat.</li>
         <li>Use the <code>/summarise</code> command to request highlights for the past few hours.</li>
-        <li>Pay securely via x402, then receive an actionable summary right inside Discord.</li>
+        <li>Pay securely via x402, then receive an actionable summary right in your chat.</li>
       </ol>
     </section>
 

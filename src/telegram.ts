@@ -35,7 +35,9 @@ export function createTelegramBot(options: {
     }
     const chatId = msg.chat?.id;
     const text = "text" in msg ? msg.text ?? "" : "";
-    if (chatId && text.trim().length > 0) {
+    // Don't store command messages - they shouldn't be included in summaries
+    const trimmed = text.trim();
+    if (chatId && trimmed.length > 0 && !trimmed.startsWith("/")) {
       addTelegramMessage(chatId, {
         messageId: msg.message_id,
         text,

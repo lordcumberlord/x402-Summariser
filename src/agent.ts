@@ -2385,7 +2385,9 @@ function buildTelegramSummarizerMessages(
       is_bot: false,
       text: msg.text.trim(),
       attachments: [],
-      reactions: [],
+      reactions: msg.reactionCount && msg.reactionCount > 0
+        ? [{ emoji: null, count: msg.reactionCount }]
+        : [],
       reply_to_id: msg.replyToMessageId
         ? String(msg.replyToMessageId)
         : undefined,

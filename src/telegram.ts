@@ -2,7 +2,7 @@ import { Bot, InlineKeyboard } from "grammy";
 import { validateLookback } from "./lookback";
 import { PAYMENT_CALLBACK_EXPIRY_MS } from "./constants";
 import { pendingTelegramCallbacks } from "./pending";
-import { addTelegramMessage } from "./telegramStore";
+import { addTelegramMessage, updateTelegramMessageReactions } from "./telegramStore";
 
 const DEFAULT_LOOKBACK_MINUTES = 60;
 
@@ -54,6 +54,31 @@ export function createTelegramBot(options: {
       });
     }
     return next();
+  });
+
+  // Handle message reactions - track reaction counts for messages
+  bot.on("message_reaction", async (ctx) => {
+    try {
+      const update = ctx.update.message_reaction;
+      if (!update) return;
+      
+      const chatId = update.chat.id;
+      const messageId = update.message_id;
+      
+      // Get current reactions count from the update
+      // Telegram provides reaction_counts in the message_reaction update
+      const reactionCounts = update.reaction_counts || [];
+      const totalReactions = reactionCounts.reduce((sum, rc) => sum + (rc.count || 0), 0);
+      
+      if (totalReactions > 0) {
+        updateTelegramMessageReactions(chatId, messageId, totalReactions);
+      } else {
+        // No reactions - set to 0
+        updateTelegramMessageReactions(chatId, messageId, 0);
+      }
+    } catch (error) {
+      console.warn("[telegram] Error handling message reaction:", error);
+    }
   });
 
   bot.command("start", async (ctx) => {

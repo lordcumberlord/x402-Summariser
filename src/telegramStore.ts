@@ -6,6 +6,7 @@ export type TelegramStoredMessage = {
   authorUsername?: string | null;
   authorDisplay?: string | null;
   replyToMessageId?: number;
+  reactionCount?: number; // Total number of reactions on this message
 };
 
 const MAX_MESSAGES_PER_CHAT = 1000;
@@ -35,4 +36,18 @@ export function getTelegramMessagesWithin(chatId: number, lookbackMinutes: numbe
 
 export function clearTelegramMessages(chatId: number) {
   messageStore.delete(chatId);
+}
+
+export function updateTelegramMessageReactions(
+  chatId: number,
+  messageId: number,
+  reactionCount: number
+) {
+  const messages = messageStore.get(chatId);
+  if (!messages) return;
+  
+  const message = messages.find((msg) => msg.messageId === messageId);
+  if (message) {
+    message.reactionCount = reactionCount;
+  }
 }

@@ -18,7 +18,7 @@ const DISCORD_API_DEFAULT_BASE = "https://discord.com/api/v10";
 
 // Payment constants
 const USDC_DECIMALS = 6;
-const DEFAULT_PRICE_USDC = BigInt(100000); // 0.10 USDC (100000 / 10^6)
+const DEFAULT_PRICE_USDC = BigInt(50000); // 0.05 USDC (50000 / 10^6)
 const EPHEMERAL_FLAG = 1 << 6;
 
 function makeEphemeralResponse(message: string): Response {
@@ -230,7 +230,7 @@ async function handleDiscordInteraction(req: Request): Promise<Response> {
             const paymentUrl = `${agentBaseUrl}/pay?channelId=${channel_id}&serverId=${guild_id || ""}&lookbackMinutes=${lookbackMinutes}&discord_callback=${callbackParam}`;
             
             // Get price from entrypoint config or default
-            const price = process.env.ENTRYPOINT_PRICE || "0.10";
+            const price = process.env.ENTRYPOINT_PRICE || "0.05";
             const currency = process.env.PAYMENT_CURRENCY || "USDC";
             
             const paymentMessage = `💳 **Payment Required**
@@ -360,10 +360,10 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
       return Response.json({ error: "Invalid or expired callback token" }, { status: 404 });
     }
 
-    // Remove from pending
+    // Remove from pending immediately
     pendingDiscordCallbacks.delete(decodedToken);
 
-    // Send result to Discord
+    // Prepare Discord posting - do it with a timeout so we don't block too long
     const baseUrl = process.env.DISCORD_API_BASE_URL ?? DISCORD_API_DEFAULT_BASE;
     const followupUrl = `${baseUrl}/webhooks/${callbackData.applicationId}/${decodedToken}`;
 
@@ -393,37 +393,69 @@ async function handleDiscordCallback(req: Request): Promise<Response> {
     
     const content = `✅ Payment Confirmed\n\n${summary}`.trim();
     
-    const followupResponse = await fetch(followupUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content,
-      }),
-    });
+    // Send to Discord - try to complete it quickly, but don't block forever
+    // Use Promise.race with a timeout so we return within 5 seconds max
+    try {
+      await Promise.race([
+        (async () => {
+          const followupResponse = await fetch(followupUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              content,
+            }),
+          });
 
-    if (!followupResponse.ok) {
-      const errorText = await followupResponse.text();
-      console.error(`[discord] Failed to send callback result: ${followupResponse.status} ${errorText}`);
-      return Response.json({ error: "Failed to send result to Discord" }, { status: 500 });
+          if (!followupResponse.ok) {
+            const errorText = await followupResponse.text();
+            console.error(`[discord] Failed to send callback result: ${followupResponse.status} ${errorText}`);
+            return;
+          }
+
+          if (callbackData.paymentMessageId) {
+            const editUrl = `${followupUrl}/messages/${callbackData.paymentMessageId}`;
+            const editResponse = await fetch(editUrl, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                content: "✅ Payment received. Summary posted below.",
+              }),
+            });
+
+            if (!editResponse.ok) {
+              const editError = await editResponse.text();
+              console.warn(`[discord] Failed to edit payment message: ${editResponse.status} ${editError}`);
+            }
+          }
+
+          console.log(`[discord] Successfully sent callback result to Discord`);
+        })(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Discord API timeout")), 5000)
+        )
+      ]);
+    } catch (error: any) {
+      // If timeout or error, log it but still return success
+      // The background task will continue if it hasn't been garbage collected
+      console.error("[discord] Error or timeout posting to Discord:", error);
+      // Fire off a background task to retry if needed
+      setTimeout(async () => {
+        try {
+          const retryResponse = await fetch(followupUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content }),
+          });
+          if (retryResponse.ok) {
+            console.log(`[discord] Successfully sent callback result on retry`);
+          }
+        } catch (retryError) {
+          console.error("[discord] Retry also failed:", retryError);
+        }
+      }, 100);
     }
 
-    if (callbackData.paymentMessageId) {
-      const editUrl = `${followupUrl}/messages/${callbackData.paymentMessageId}`;
-      const editResponse = await fetch(editUrl, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content: "✅ Payment received. Summary posted below.",
-        }),
-      });
-
-      if (!editResponse.ok) {
-        const editError = await editResponse.text();
-        console.warn(`[discord] Failed to edit payment message: ${editResponse.status} ${editError}`);
-      }
-    }
-
-    console.log(`[discord] Successfully sent callback result to Discord`);
+    // Return success
     return Response.json({ success: true });
   } catch (error: any) {
     console.error("[discord] Error handling callback:", error);
@@ -450,6 +482,7 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
       return Response.json({ error: "Invalid or expired callback token" }, { status: 404 });
     }
 
+    // Remove from pending immediately
     pendingTelegramCallbacks.delete(decodedToken);
 
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -466,43 +499,73 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
 
     const messageText = `✅ Payment Confirmed\n\n${summary}`.trim();
 
-    const sendUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    const sendResponse = await fetch(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: callbackData.chatId,
-        text: messageText,
-      }),
-    });
+    // Send to Telegram - try to complete it quickly, but don't block forever
+    try {
+      await Promise.race([
+        (async () => {
+          const sendUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+          const sendResponse = await fetch(sendUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chat_id: callbackData.chatId,
+              text: messageText,
+            }),
+          });
 
-    if (!sendResponse.ok) {
-      const errorText = await sendResponse.text();
-      console.error(`[telegram] Failed to send message: ${sendResponse.status} ${errorText}`);
-      return Response.json(
-        { error: "Failed to send result to Telegram" },
-        { status: 500 }
-      );
+          if (!sendResponse.ok) {
+            const errorText = await sendResponse.text();
+            console.error(`[telegram] Failed to send message: ${sendResponse.status} ${errorText}`);
+            return;
+          }
+
+          if (callbackData.paymentMessageId) {
+            const deleteUrl = `https://api.telegram.org/bot${botToken}/deleteMessage`;
+            const deleteResponse = await fetch(deleteUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                chat_id: callbackData.chatId,
+                message_id: callbackData.paymentMessageId,
+              }),
+            });
+
+            if (!deleteResponse.ok) {
+              const deleteError = await deleteResponse.text();
+              console.warn(`[telegram] Failed to delete payment message: ${deleteResponse.status} ${deleteError}`);
+            }
+          }
+
+          console.log(`[telegram] Successfully sent callback result to chat ${callbackData.chatId}`);
+        })(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Telegram API timeout")), 5000)
+        )
+      ]);
+    } catch (error: any) {
+      // If timeout or error, log it but still return success
+      console.error("[telegram] Error or timeout posting to Telegram:", error);
+      // Fire off a background task to retry if needed
+      setTimeout(async () => {
+        try {
+          const retryResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chat_id: callbackData.chatId,
+              text: messageText,
+            }),
+          });
+          if (retryResponse.ok) {
+            console.log(`[telegram] Successfully sent callback result on retry`);
+          }
+        } catch (retryError) {
+          console.error("[telegram] Retry also failed:", retryError);
+        }
+      }, 100);
     }
 
-    if (callbackData.paymentMessageId) {
-      const deleteUrl = `https://api.telegram.org/bot${botToken}/deleteMessage`;
-      const deleteResponse = await fetch(deleteUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: callbackData.chatId,
-          message_id: callbackData.paymentMessageId,
-        }),
-      });
-
-      if (!deleteResponse.ok) {
-        const deleteError = await deleteResponse.text();
-        console.warn(`[telegram] Failed to delete payment message: ${deleteResponse.status} ${deleteError}`);
-      }
-    }
-
-    console.log(`[telegram] Successfully sent callback result to chat ${callbackData.chatId}`);
+    // Return success
     return Response.json({ success: true });
   } catch (error: any) {
     console.error("[telegram] Error handling callback:", error);
@@ -584,7 +647,7 @@ const server = Bun.serve({
   </g>
   <g transform="translate(420 215)">
     <text x="0" y="0" font-family="'Inter', 'Segoe UI', system-ui, sans-serif" font-size="72" font-weight="700" fill="#f8fafc">x402 Summariser Bot</text>
-    <text x="0" y="96" font-family="'Inter', 'Segoe UI', system-ui, sans-serif" font-size="34" fill="rgba(226,232,240,0.88)">Summarise your Discord &amp; Telegram chats for $0.10 via x402.</text>
+    <text x="0" y="96" font-family="'Inter', 'Segoe UI', system-ui, sans-serif" font-size="34" fill="rgba(226,232,240,0.88)">Summarise your Discord &amp; Telegram chats for $0.05 via x402.</text>
   </g>
 </svg>`;
       return new Response(svg, {
@@ -625,7 +688,7 @@ const server = Bun.serve({
         ? "summarise%20telegram%20chat"
         : "summarise%20chat";
       const entrypointUrl = `${agentBaseUrl}/entrypoints/${entrypointPath}/invoke`;
-      const price = process.env.ENTRYPOINT_PRICE || "0.10";
+      const price = process.env.ENTRYPOINT_PRICE || "0.05";
       const currency = process.env.PAYMENT_CURRENCY || "USDC";
 
       const heading = usingTelegram
@@ -831,9 +894,9 @@ const server = Bun.serve({
         });
         
         // Wrap fetch with payment handling (pass viem wallet client)
-        // maxValue: 0.10 USDC = 100000 (6 decimals)
+        // maxValue: 0.05 USDC = 50000 (6 decimals)
         // Note: x402 uses EIP-3009 for gasless transactions - facilitator pays gas
-        const x402Fetch = wrapFetchWithPayment(fetch, walletClient, BigInt(100000));
+        const x402Fetch = wrapFetchWithPayment(fetch, walletClient, BigInt(50000));
         
         const entrypointUrl = cfg.entrypointUrl;
         
@@ -1060,9 +1123,9 @@ const server = Bun.serve({
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>x402 Summariser Bot</title>
-  <meta name="description" content="Summarise your Discord & Telegram chats for $0.10 via x402.">
+  <meta name="description" content="Summarise your Discord & Telegram chats for $0.05 via x402.">
   <meta property="og:title" content="x402 Summariser Bot">
-  <meta property="og:description" content="Summarise your Discord & Telegram chats for $0.10 via x402.">
+  <meta property="og:description" content="Summarise your Discord & Telegram chats for $0.05 via x402.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="${origin}/download">
   <meta property="og:image" content="${ogImageUrl}">
@@ -1071,7 +1134,7 @@ const server = Bun.serve({
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="x402 Summariser Bot">
-  <meta name="twitter:description" content="Summarise your Discord & Telegram chats for $0.10 via x402.">
+  <meta name="twitter:description" content="Summarise your Discord & Telegram chats for $0.05 via x402.">
   <meta name="twitter:image" content="${ogImageUrl}">
   <style>
     :root {
@@ -1369,7 +1432,7 @@ const server = Bun.serve({
           process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
         const fullEntrypointUrl =
           agentBaseUrl + url.pathname + (url.search ? url.search : "");
-        const price = process.env.ENTRYPOINT_PRICE || "0.10";
+        const price = process.env.ENTRYPOINT_PRICE || "0.05";
         const currency = process.env.PAYMENT_CURRENCY || "USDC";
         const x402Version = 1.0;
 
@@ -1379,7 +1442,7 @@ const server = Bun.serve({
           description: `${sourceLabel} - Pay $${price} ${currency}`,
           mimeType: "application/json",
           payTo: payToAddress,
-          maxAmountRequired: "100000",
+          maxAmountRequired: "50000",
           maxTimeoutSeconds: 300,
           network: "base" as const,
           asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",

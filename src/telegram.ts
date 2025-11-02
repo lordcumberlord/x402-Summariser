@@ -88,7 +88,7 @@ export function createTelegramBot(options: {
     url.searchParams.set("lookbackMinutes", String(lookbackMinutes));
 
     const keyboard = new InlineKeyboard().url(
-      "Pay $0.10 via x402",
+      "Pay $0.05 via x402",
       url.toString()
     );
 

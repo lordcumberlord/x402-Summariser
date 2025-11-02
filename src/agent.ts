@@ -104,7 +104,7 @@ const configOverrides: AgentKitConfig = {
       (process.env.PAY_TO as `0x${string}`) ??
       "0xb308ed39d67D0d4BAe5BC2FAEF60c66BBb6AE429",
     network: (process.env.NETWORK as any) ?? "base",
-    defaultPrice: process.env.DEFAULT_PRICE ?? "0.1",
+    defaultPrice: process.env.DEFAULT_PRICE ?? "0.05",
     // Add token configuration for USDC
     // Note: x402 may require token address in payment headers, not config
     // This will depend on x402 SDK implementation
@@ -380,7 +380,7 @@ addEntrypoint({
         });
       }
     }),
-  price: process.env.ENTRYPOINT_PRICE || "0.10", // Default to 0.10 USDC (or set via ENTRYPOINT_PRICE env var)
+  price: process.env.ENTRYPOINT_PRICE || "0.05", // Default to 0.05 USDC (or set via ENTRYPOINT_PRICE env var)
   // Note: x402 will handle token selection based on payment headers
   // For USDC, users will pay with USDC when using x402 wallet
   output: z.object({
@@ -689,7 +689,7 @@ addEntrypoint({
         });
       }
     }),
-  price: process.env.ENTRYPOINT_PRICE || "0.10",
+  price: process.env.ENTRYPOINT_PRICE || "0.05",
   output: z.object({
     summary: z.string(),
     actionables: z.array(z.string()),

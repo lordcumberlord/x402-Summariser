@@ -670,6 +670,24 @@ const server = Bun.serve({
       return handleTelegramCallback(req);
     }
 
+    if (url.pathname === "/assets/logo.png" && req.method === "GET") {
+      try {
+        const logoPath = "./public/assets/logo.png";
+        const file = Bun.file(logoPath);
+        if (await file.exists()) {
+          return new Response(file, {
+            headers: {
+              "Content-Type": "image/png",
+              "Cache-Control": "public, max-age=86400",
+            },
+          });
+        }
+      } catch (error) {
+        console.error("[assets] Error serving logo.png:", error);
+      }
+      return new Response("Logo not found", { status: 404 });
+    }
+
     if (url.pathname === "/assets/x402-card.svg" && req.method === "GET") {
       const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
@@ -760,7 +778,7 @@ const server = Bun.serve({
         : "After payment, your summary will automatically appear in Discord.";
 
       const origin = url.origin;
-      const logoUrl = `${origin}/assets/x402-card.svg`;
+      const logoUrl = `${origin}/assets/logo.png`;
 
       const pageConfig = {
         source,
@@ -1233,7 +1251,7 @@ const server = Bun.serve({
 
     if (url.pathname === "/download" && req.method === "GET") {
       const origin = url.origin;
-      const ogImageUrl = `${origin}/assets/x402-card.svg`;
+      const ogImageUrl = `${origin}/assets/logo.png`;
       return new Response(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1246,7 +1264,7 @@ const server = Bun.serve({
   <meta property="og:type" content="website">
   <meta property="og:url" content="${origin}/download">
   <meta property="og:image" content="${ogImageUrl}">
-  <meta property="og:image:type" content="image/svg+xml">
+  <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
@@ -1313,67 +1331,14 @@ const server = Bun.serve({
     }
     .logo {
       width: 120px;
-      aspect-ratio: 1;
+      height: 120px;
       margin: 0 auto 24px;
-      position: relative;
-      background: radial-gradient(circle at 25% 25%, #5ef2ff, #2563eb 70%);
-      border-radius: 48% 52% 58% 42% / 60% 60% 40% 40%;
-      box-shadow: 0 20px 35px rgba(37, 99, 235, 0.45);
+      display: block;
     }
-    .logo::after {
-      content: "";
-      position: absolute;
-      bottom: -18px;
-      right: 26px;
-      width: 36px;
-      height: 36px;
-      background: inherit;
-      border-radius: 0 0 70% 30%;
-      transform: rotate(35deg);
-      box-shadow: inherit;
-      filter: brightness(0.95);
-    }
-    .logo-face {
-      position: absolute;
-      inset: 18% 16% 28% 16%;
-      background: radial-gradient(circle at 50% 50%, #0f172a 55%, rgba(15, 23, 42, 0.8));
-      border-radius: 40px;
-      display: flex;
-      align-items: center;
-      justify-content: space-around;
-    }
-    .logo-eye {
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      background: #8be3ff;
-      box-shadow: 0 0 12px rgba(139, 227, 255, 0.7);
-    }
-    .logo::before {
-      content: "";
-      position: absolute;
-      top: 16px;
-      left: 24px;
-      width: 14px;
-      height: 14px;
-      background: #61f0ff;
-      border-radius: 50%;
-      box-shadow: 0 88px 0 -2px #61f0ff;
-    }
-    .logo-antenna {
-      position: absolute;
-      top: -18px;
-      left: 24px;
-      right: 24px;
-      display: flex;
-      justify-content: space-between;
-    }
-    .logo-antenna span {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: radial-gradient(circle at 40% 30%, #7ff8ff, #1d4ed8);
-      box-shadow: 0 8px 16px rgba(37, 99, 235, 0.5);
+    .logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
     section {
       background: linear-gradient(145deg, rgba(17, 24, 39, 0.78), rgba(15, 23, 42, 0.94));
@@ -1486,8 +1451,7 @@ const server = Bun.serve({
   <main class="page">
     <header>
       <div class="logo">
-        <div class="logo-antenna"><span></span><span></span></div>
-        <div class="logo-face"><span class="logo-eye"></span><span class="logo-eye"></span></div>
+        <img src="${ogImageUrl}" alt="x402 Summariser Bot Logo">
       </div>
       <h1>x402 Summariser Bot</h1>
       <p class="lead">Bring instant AI summaries to your community and pay via x402 with each recap. Install the Discord or Telegram bot and get channel highlights on demand.</p>

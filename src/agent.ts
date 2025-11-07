@@ -5,7 +5,7 @@ import {
   AgentKitConfig,
 } from "@lucid-dreams/agent-kit";
 import { flow } from "@ax-llm/ax";
-import { getTelegramMessagesWithin } from "./telegramStore";
+import { getTelegramMessagesWithin, TelegramStoredMessage } from "./telegramStore";
 
 type DiscordAuthor = {
   id: string;
@@ -644,6 +644,7 @@ addEntrypoint({
     const conversation = formatConversation(messages);
     const conversationEntries = extractConversationEntries(conversation);
     console.log(`[discord-summary-agent] Formatted conversation preview (first 500 chars):`, conversation.substring(0, 500));
+    const messageLinks = extractLinksFromDiscordMessages(messages);
     
     const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
 
@@ -665,7 +666,8 @@ addEntrypoint({
             fallbackText,
             lookbackMinutes,
             rangeLabel,
-            conversationEntries
+            conversationEntries,
+            messageLinks
           ),
           actionables: [],
         },
@@ -710,6 +712,8 @@ addEntrypoint({
         .replace(/\[[^\]]*\d{4}[^\]]*\]/g, "") // Any bracketed timestamps
         .replace(/x402 Summariser[^\n]*\n?/gi, "") // Remove "x402 Summariser:" prefix
         .trim();
+
+      summary = appendLinksSection(summary, messageLinks);
 
       // Don't call finalizeSummary - the structured LLM output already includes the greeting
       // and proper formatting. Just use it as-is.
@@ -757,7 +761,8 @@ addEntrypoint({
             fallbackText,
             lookbackMinutes,
             rangeLabel,
-            conversationEntries
+            conversationEntries,
+            messageLinks
           ),
           actionables: [],
         },
@@ -822,6 +827,7 @@ addEntrypoint({
     });
     console.log(`[telegram-entrypoint] Total messages in window: ${messages.length}`);
     console.log(`[telegram-entrypoint] Meaningful messages (non-command): ${meaningfulMessages.length}`);
+    const messageLinks = extractLinksFromTelegramMessages(meaningfulMessages);
     
     // Always let the LLM handle summaries - it has prompt guidance for quiet windows
     // with greetings and witty closers (see Example B in the prompt)
@@ -850,7 +856,10 @@ addEntrypoint({
     if (!llm) {
       return {
         output: {
-          summary: buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+          summary: appendLinksSection(
+            buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+            messageLinks
+          ),
           actionables: [],
         },
         model: "telegram-fallback",
@@ -873,12 +882,16 @@ addEntrypoint({
       if (!finalSummary) {
         return {
           output: {
-            summary: buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+            summary: appendLinksSection(
+              buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+              messageLinks
+            ),
             actionables: [],
           },
           model: "telegram-social-fallback",
         };
       }
+      finalSummary = appendLinksSection(finalSummary, messageLinks);
       return {
         output: {
           summary: finalSummary,
@@ -890,7 +903,10 @@ addEntrypoint({
       console.error("[telegram-summary-agent] LLM flow error:", error);
       return {
         output: {
-          summary: buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+          summary: appendLinksSection(
+            buildSocialFallbackSummaryFromTelegram(meaningfulMessages),
+            messageLinks
+          ),
           actionables: [],
         },
         model: "telegram-error",
@@ -1044,6 +1060,7 @@ export async function executeSummariseChat(input: {
 
   const conversation = formatConversation(messages);
   const conversationEntries = extractConversationEntries(conversation);
+  const messageLinks = extractLinksFromDiscordMessages(messages);
   const timeWindow = `${start.toISOString()} → ${end.toISOString()} (${rangeLabel})`;
   const windowLabel = rangeLabel.startsWith("the ")
     ? rangeLabel.replace(/^the\s+/i, "")
@@ -1053,7 +1070,10 @@ export async function executeSummariseChat(input: {
   if (!llm) {
     if (shouldForceSocialDiscord(messages)) {
       return {
-        summary: buildSocialFallbackSummaryFromDiscord(messages),
+        summary: appendLinksSection(
+          buildSocialFallbackSummaryFromDiscord(messages),
+          messageLinks
+        ),
         actionables: [],
       };
     }
@@ -1070,7 +1090,8 @@ export async function executeSummariseChat(input: {
         fallbackText,
         lookbackMinutes,
         rangeLabel,
-        conversationEntries
+        conversationEntries,
+        messageLinks
       ),
       actionables: [],
     };
@@ -1101,15 +1122,23 @@ export async function executeSummariseChat(input: {
     if (!finalSummary) {
       if (shouldForceSocialDiscord(messages)) {
         return {
-          summary: buildSocialFallbackSummaryFromDiscord(messages),
+          summary: appendLinksSection(
+            buildSocialFallbackSummaryFromDiscord(messages),
+            messageLinks
+          ),
           actionables: [],
         };
       }
       return {
-        summary: `No material updates or chatter in this window.`,
+        summary: appendLinksSection(
+          `No material updates or chatter in this window.`,
+          messageLinks
+        ),
         actionables: [],
       };
     }
+
+    finalSummary = appendLinksSection(finalSummary, messageLinks);
 
     return {
       summary: finalSummary,
@@ -1119,7 +1148,10 @@ export async function executeSummariseChat(input: {
     console.error("[discord-summary-agent] LLM flow error:", error);
     if (shouldForceSocialDiscord(messages)) {
       return {
-        summary: buildSocialFallbackSummaryFromDiscord(messages),
+        summary: appendLinksSection(
+          buildSocialFallbackSummaryFromDiscord(messages),
+          messageLinks
+        ),
         actionables: [],
       };
     }
@@ -1137,7 +1169,8 @@ export async function executeSummariseChat(input: {
         fallbackText,
         lookbackMinutes,
         rangeLabel,
-        conversationEntries
+        conversationEntries,
+        messageLinks
       ),
       actionables: [],
     };
@@ -1210,6 +1243,92 @@ function extractConversationEntries(conversation: string): ConversationEntry[] {
     });
 }
 
+const URL_REGEX = /https?:\/\/[^\s)]+/gi;
+
+function normalizeLink(url: string): string {
+  return url.replace(/[)\],.!?:;]+$/g, "");
+}
+
+function collectLinksFromText(text: string | null | undefined, links: Set<string>) {
+  if (!text) return;
+  const matches = text.match(URL_REGEX);
+  if (!matches) return;
+  for (const raw of matches) {
+    const normalized = normalizeLink(raw.trim());
+    if (normalized) {
+      links.add(normalized);
+    }
+  }
+}
+
+function extractLinksFromDiscordMessages(messages: DiscordMessage[]): string[] {
+  const links = new Set<string>();
+  for (const message of messages) {
+    collectLinksFromText(message?.content, links);
+    if (Array.isArray(message?.embeds)) {
+      for (const embed of message.embeds) {
+        if (!embed) continue;
+        if (typeof embed.url === "string") {
+          links.add(normalizeLink(embed.url));
+        }
+        if (typeof embed.title === "string") {
+          collectLinksFromText(embed.title, links);
+        }
+        if (typeof embed.description === "string") {
+          collectLinksFromText(embed.description, links);
+        }
+      }
+    }
+    if (Array.isArray(message?.attachments)) {
+      for (const attachment of message.attachments) {
+        if (attachment?.url) {
+          links.add(normalizeLink(attachment.url));
+        }
+      }
+    }
+  }
+  return Array.from(links).slice(0, 5);
+}
+
+function extractLinksFromTelegramMessages(messages: TelegramStoredMessage[]): string[] {
+  const links = new Set<string>();
+  for (const message of messages) {
+    collectLinksFromText(message?.text, links);
+  }
+  return Array.from(links).slice(0, 5);
+}
+
+function appendLinksSection(summary: string, links: string[]): string {
+  if (!links.length) {
+    return summary;
+  }
+
+  if (/https?:\/\//i.test(summary)) {
+    return summary;
+  }
+
+  if (summary.includes("**Notable Links:**")) {
+    return summary;
+  }
+
+  const uniqueLinks = Array.from(new Set(links.map(normalizeLink))).filter(Boolean);
+  if (!uniqueLinks.length) {
+    return summary;
+  }
+
+  const trimmed = summary.trimEnd();
+  const linksBlock = ["**Notable Links:**", ...uniqueLinks.slice(0, 3).map((link) => `• ${link}`)].join("\n");
+  const lines = trimmed.split(/\n/);
+  const lastLine = lines[lines.length - 1]?.trim();
+
+  if (lastLine && lastLine.startsWith("_") && lastLine.endsWith("_")) {
+    const body = lines.slice(0, -1);
+    return [...body, linksBlock, lines[lines.length - 1]].join("\n");
+  }
+
+  return trimmed ? `${trimmed}\n${linksBlock}` : linksBlock;
+}
+
 function ensureGreeting(
   summary: string,
   lookbackMinutes?: number,
@@ -1268,10 +1387,12 @@ function finalizeSummary(
   rawSummary: string,
   lookbackMinutes?: number,
   rangeLabel?: string,
-  conversationEntries: ConversationEntry[] = []
+  conversationEntries: ConversationEntry[] = [],
+  links: string[] = []
 ): string {
   const withGreeting = ensureGreeting(rawSummary, lookbackMinutes, rangeLabel);
-  return normalizeSummaryBullets(withGreeting, conversationEntries);
+  const normalized = normalizeSummaryBullets(withGreeting, conversationEntries);
+  return appendLinksSection(normalized, links);
 }
 
 function normalizeSummaryBullets(

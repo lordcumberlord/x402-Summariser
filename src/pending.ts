@@ -13,7 +13,11 @@ export type TelegramCallbackData = {
   messageId?: number | null;
   paymentMessageId?: number;
   username?: string | null;
-  lookbackMinutes: number;
+  // For summarise command
+  lookbackMinutes?: number;
+  // For search_events command
+  query?: string;
+  searchType?: "place" | "topic";
   expiresAt: number;
 };
 

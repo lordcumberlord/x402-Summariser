@@ -99,7 +99,7 @@ const configOverrides: AgentKitConfig = {
   payments: {
     facilitatorUrl:
       (process.env.FACILITATOR_URL as any) ??
-      "https://facilitator.daydreams.systems",
+      "https://facilitator.x402.rs",
     payTo: (
       (process.env.PAY_TO as `0x${string}`) ??
       "0x1b0006dbfbf4d8ec99cd7c40c43566eaa7d95fed"
@@ -910,79 +910,6 @@ addEntrypoint({
           actionables: [],
         },
         model: "telegram-error",
-      };
-    }
-  },
-});
-
-addEntrypoint({
-  key: "search luma events",
-  description:
-    "Search for events on Luma.com by place or topic and return relevant event links.",
-  input: z
-    .object({
-      query: z
-        .string()
-        .min(1, { message: "Provide a search query." })
-        .describe("The search query - either a place name or topic."),
-      searchType: z
-        .enum(["place", "topic"], {
-          message: "Search type must be either 'place' or 'topic'.",
-        })
-        .describe("Type of search: 'place' for location-based or 'topic' for subject-based."),
-      limit: z
-        .coerce.number()
-        .int({ message: "Limit must be a whole number." })
-        .min(1, { message: "Limit must be at least 1." })
-        .max(20, { message: "Limit cannot exceed 20 events." })
-        .optional()
-        .default(10)
-        .describe("Maximum number of events to return (default: 10, max: 20)."),
-    }),
-  price: process.env.ENTRYPOINT_PRICE || "0.05",
-  output: z.object({
-    events: z.array(
-      z.object({
-        id: z.string(),
-        title: z.string(),
-        url: z.string().url(),
-        description: z.string().optional(),
-        location: z.string().optional(),
-        date: z.string().optional(),
-      })
-    ),
-    formattedMessage: z.string().describe("Formatted message ready for Telegram display."),
-  }),
-  async handler(ctx) {
-    const { query, searchType, limit = 10 } = ctx.input;
-
-    // Import Luma search function
-    const { searchLumaEvents, formatEventsForTelegram } = await import("./luma");
-
-    try {
-      const events = await searchLumaEvents({
-        query: query.trim(),
-        searchType,
-        limit,
-      });
-
-      const formattedMessage = formatEventsForTelegram(events);
-
-      return {
-        output: {
-          events,
-          formattedMessage,
-        },
-        model: "luma-search",
-      };
-    } catch (error: any) {
-      console.error("[luma-search] Error searching events:", error);
-      return {
-        output: {
-          events: [],
-          formattedMessage: `❌ Error searching for events: ${error?.message || "Unknown error"}. Please try again.`,
-        },
-        model: "luma-search-error",
       };
     }
   },

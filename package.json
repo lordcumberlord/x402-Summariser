@@ -11,10 +11,7 @@
     "start": "bun run src/index.ts",
     "agent": "bun run src/agent.ts",
     "typecheck": "bunx tsc --noEmit",
-    "register-slash": "bun run scripts/register-slash-command.ts",
-    "inspect-luma": "bun run scripts/inspect-luma-puppeteer.ts",
-    "test-luma": "bun run test-luma.ts",
-    "test-event-api": "bun run scripts/test-event-api.ts"
+    "register-slash": "bun run scripts/register-slash-command.ts"
   },
   "dependencies": {
     "@lucid-dreams/agent-kit": "^0.2.8",

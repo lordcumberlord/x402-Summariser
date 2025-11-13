@@ -513,86 +513,64 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
     }
 
     const output = result?.output || result;
+    let summary = (output?.summary || output?.text || "").trim();
     
-    // Determine if this is a search_events callback or summarise callback
-    const isSearchCallback = callbackData.query !== undefined && callbackData.searchType !== undefined;
+    // Debug logging
+    console.log(`[telegram-callback] Raw result keys:`, Object.keys(result || {}));
+    console.log(`[telegram-callback] Raw output keys:`, Object.keys(output || {}));
+    console.log(`[telegram-callback] Raw summary length: ${summary.length}`);
+    console.log(`[telegram-callback] Summary preview: ${summary.substring(0, 200)}`);
     
-    let messageText: string;
+    // Fix greeting if it appears as a bullet point - remove bullet and place on new line
+    summary = summary.replace(/^•\s*(Good (morning|afternoon|evening)![^\n]*)/m, "$1");
     
-    if (isSearchCallback) {
-      // For search_events: use formattedMessage directly
-      messageText = (output?.formattedMessage || output?.text || "").trim();
-      
-      if (!messageText) {
-        messageText = "No events found. Please try a different search query.";
+    // Remove any duplicate greeting lines (keep only the first one)
+    const greetingPattern = /^(Good (morning|afternoon|evening)![^\n]*)/m;
+    let firstGreetingIndex = -1;
+    summary = summary.replace(new RegExp(greetingPattern.source, "gm"), (match: string, offset: number) => {
+      if (firstGreetingIndex === -1) {
+        // Keep the first greeting
+        firstGreetingIndex = offset;
+        return match;
+      } else {
+        // Remove subsequent duplicates
+        return "";
       }
-    } else {
-      // For summarise: process summary with cleaning
-      let summary = (output?.summary || output?.text || "").trim();
-      
-      // Debug logging
-      console.log(`[telegram-callback] Raw result keys:`, Object.keys(result || {}));
-      console.log(`[telegram-callback] Raw output keys:`, Object.keys(output || {}));
-      console.log(`[telegram-callback] Raw summary length: ${summary.length}`);
-      console.log(`[telegram-callback] Summary preview: ${summary.substring(0, 200)}`);
-      
-      // Fix greeting if it appears as a bullet point - remove bullet and place on new line
-      summary = summary.replace(/^•\s*(Good (morning|afternoon|evening)![^\n]*)/m, "$1");
-      
-      // Remove any duplicate greeting lines (keep only the first one)
-      const greetingPattern = /^(Good (morning|afternoon|evening)![^\n]*)/m;
-      let firstGreetingIndex = -1;
-      summary = summary.replace(new RegExp(greetingPattern.source, "gm"), (match: string, offset: number) => {
-        if (firstGreetingIndex === -1) {
-          // Keep the first greeting
-          firstGreetingIndex = offset;
-          return match;
-        } else {
-          // Remove subsequent duplicates
-          return "";
-        }
-      }).replace(/\n\n+/g, "\n\n").trim(); // Clean up extra blank lines
-      
-      // Remove "Hello!" style greetings (should use time-based greetings)
-      summary = summary.replace(/^Hello!\s*Here is what happened[^\n]*\n?/im, "");
-      
-      // Remove payment-related prefixes that might have been included in the summary
-      summary = summary
-        .replace(/^✅\s*Payment (Confirmed|Required)\s*\n?\n?/gim, "") // Remove "✅ Payment Confirmed" or "✅ Payment Required" at start
-        .replace(/💳\s*\*\*Payment Required\*\*[\s\S]*?automatically\./gi, "")
-        .replace(/🔗\s*\*\*Pay.*?\n/gi, "")
-        .replace(/https?:\/\/[^\s]*pay[^\s]*/gi, "")
-        .replace(/To summarise this channel, please pay.*?via x402\./gi, "")
-        .trim();
-      
-      console.log(`[telegram-callback] Summary after cleaning length: ${summary.length}`);
-      
-      if (!summary) {
-        console.warn(`[telegram-callback] Summary was empty after cleaning, using fallback message`);
-        summary = "No material updates or chatter in this window.";
-      }
-
-      messageText = summary.trim();
+    }).replace(/\n\n+/g, "\n\n").trim(); // Clean up extra blank lines
+    
+    // Remove "Hello!" style greetings (should use time-based greetings)
+    summary = summary.replace(/^Hello!\s*Here is what happened[^\n]*\n?/im, "");
+    
+    // Remove payment-related prefixes that might have been included in the summary
+    summary = summary
+      .replace(/^✅\s*Payment (Confirmed|Required)\s*\n?\n?/gim, "") // Remove "✅ Payment Confirmed" or "✅ Payment Required" at start
+      .replace(/💳\s*\*\*Payment Required\*\*[\s\S]*?automatically\./gi, "")
+      .replace(/🔗\s*\*\*Pay.*?\n/gi, "")
+      .replace(/https?:\/\/[^\s]*pay[^\s]*/gi, "")
+      .replace(/To summarise this channel, please pay.*?via x402\./gi, "")
+      .trim();
+    
+    console.log(`[telegram-callback] Summary after cleaning length: ${summary.length}`);
+    
+    if (!summary) {
+      console.warn(`[telegram-callback] Summary was empty after cleaning, using fallback message`);
+      summary = "No material updates or chatter in this window.";
     }
+
+    const messageText = summary.trim();
 
     // Send to Telegram - try to complete it quickly, but don't block forever
     try {
       await Promise.race([
         (async () => {
           const sendUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
-          // Use Markdown parse mode for search results (contains links) or summaries
-          const isSearchCallback = callbackData.query !== undefined && callbackData.searchType !== undefined;
-          const sendBody: any = {
-            chat_id: callbackData.chatId,
-            text: messageText,
-          };
-          if (isSearchCallback || messageText.includes("[")) {
-            sendBody.parse_mode = "Markdown";
-          }
           const sendResponse = await fetch(sendUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(sendBody),
+            body: JSON.stringify({
+              chat_id: callbackData.chatId,
+              text: messageText,
+            }),
           });
 
           if (!sendResponse.ok) {
@@ -630,18 +608,13 @@ async function handleTelegramCallback(req: Request): Promise<Response> {
       // Fire off a background task to retry if needed
       setTimeout(async () => {
         try {
-          const isSearchCallback = callbackData.query !== undefined && callbackData.searchType !== undefined;
-          const retryBody: any = {
-            chat_id: callbackData.chatId,
-            text: messageText,
-          };
-          if (isSearchCallback || messageText.includes("[")) {
-            retryBody.parse_mode = "Markdown";
-          }
           const retryResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(retryBody),
+            body: JSON.stringify({
+              chat_id: callbackData.chatId,
+              text: messageText,
+            }),
           });
           if (retryResponse.ok) {
             console.log(`[telegram] Successfully sent callback result on retry`);
@@ -785,68 +758,39 @@ const server = Bun.serve({
       const chatId = url.searchParams.get("chatId");
       const serverId = url.searchParams.get("serverId");
       const lookbackMinutesParam = url.searchParams.get("lookbackMinutes");
-      const query = url.searchParams.get("query");
-      const searchType = url.searchParams.get("searchType");
       const discordCallback = url.searchParams.get("discord_callback");
       const telegramCallback = url.searchParams.get("telegram_callback");
 
       const usingTelegram = source === "telegram";
       const primaryId = usingTelegram ? chatId : channelId;
-      
-      // Determine if this is a search_events request or summarise request
-      const isSearchRequest = query !== null && searchType !== null;
 
-      // Validate required parameters based on request type
-      if (!primaryId) {
-        return Response.json({ error: "Missing required parameters (chatId/channelId)" }, { status: 400 });
-      }
-      
-      if (!isSearchRequest && !lookbackMinutesParam) {
-        return Response.json({ error: "Missing required parameters (lookbackMinutes for summarise)" }, { status: 400 });
-      }
-      
-      if (isSearchRequest && (!query || !searchType)) {
-        return Response.json({ error: "Missing required parameters (query and searchType for search)" }, { status: 400 });
+      if (!primaryId || lookbackMinutesParam === null) {
+        return Response.json({ error: "Missing required parameters" }, { status: 400 });
       }
 
-      let lookbackMinutes: number | undefined;
-      if (!isSearchRequest && lookbackMinutesParam) {
-        const lookbackValidation = validateLookback(lookbackMinutesParam);
-        if ("error" in lookbackValidation) {
-          return Response.json({ error: lookbackValidation.error }, { status: 400 });
-        }
-        lookbackMinutes = lookbackValidation.minutes;
+      const lookbackValidation = validateLookback(lookbackMinutesParam);
+      if ("error" in lookbackValidation) {
+        return Response.json({ error: lookbackValidation.error }, { status: 400 });
       }
+
+      const { minutes: lookbackMinutes } = lookbackValidation;
 
       const agentBaseUrl =
         process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
-      
-      let entrypointPath: string;
-      let heading: string;
-      let entityLabel: string;
-      let postPaymentPrompt: string;
-      
-      if (isSearchRequest) {
-        entrypointPath = "search%20luma%20events";
-        heading = "🪙 Search Luma Events";
-        entityLabel = "Search Query";
-        postPaymentPrompt = "After payment, your event search results will automatically appear in Telegram.";
-      } else {
-        entrypointPath = usingTelegram
-          ? "summarise%20telegram%20chat"
-          : "summarise%20chat";
-        heading = usingTelegram
-          ? "🪙 Summarise Telegram Chat"
-          : "🪙 Summarise Discord Channel";
-        entityLabel = usingTelegram ? "Chat ID" : "Channel ID";
-        postPaymentPrompt = usingTelegram
-          ? "After payment, your summary will automatically appear in Telegram."
-          : "After payment, your summary will automatically appear in Discord.";
-      }
-      
+      const entrypointPath = usingTelegram
+        ? "summarise%20telegram%20chat"
+        : "summarise%20chat";
       const entrypointUrl = `${agentBaseUrl}/entrypoints/${entrypointPath}/invoke`;
       const price = process.env.ENTRYPOINT_PRICE || "0.05";
       const currency = process.env.PAYMENT_CURRENCY || "USDC";
+
+      const heading = usingTelegram
+        ? "🪙 Summarise Telegram Chat"
+        : "🪙 Summarise Discord Channel";
+      const entityLabel = usingTelegram ? "Chat ID" : "Channel ID";
+      const postPaymentPrompt = usingTelegram
+        ? "After payment, your summary will automatically appear in Telegram."
+        : "After payment, your summary will automatically appear in Discord.";
 
       // Ensure HTTPS origin
       const origin = url.origin.replace(/^http:/, "https:");
@@ -858,8 +802,6 @@ const server = Bun.serve({
         chatId,
         serverId,
         lookbackMinutes,
-        query,
-        searchType,
         entrypointUrl,
         discordCallback,
         telegramCallback,
@@ -939,10 +881,8 @@ const server = Bun.serve({
     <h1>${heading}</h1>
     <div class="info">
       <p><strong>Price:</strong> $${price} ${currency}</p>
-      ${isSearchRequest 
-        ? `<p><strong>Search Query:</strong> ${query}</p><p><strong>Search Type:</strong> ${searchType === "place" ? "Location" : "Topic"}</p>`
-        : `<p><strong>${entityLabel}:</strong> ${primaryId}</p><p><strong>Lookback:</strong> ${lookbackMinutes} minutes</p>`
-      }
+      <p><strong>${entityLabel}:</strong> ${primaryId}</p>
+      <p><strong>Lookback:</strong> ${lookbackMinutes} minutes</p>
     </div>
     <p style="text-align: center; color: #cbd5f5;">Click below to pay via x402. ${postPaymentPrompt}</p>
     <button class="button" onclick="pay()">Pay $${price} ${currency}</button>
@@ -1113,32 +1053,17 @@ const server = Bun.serve({
         
         status.innerHTML = '<p>🪙 Processing payment (gasless via facilitator)...</p>';
         
-        // Determine request type and build input accordingly
-        const isSearchRequest = cfg.query && cfg.searchType;
-        let requestInput;
-        
-        if (isSearchRequest) {
-          // Search events request
-          requestInput = {
-            query: cfg.query,
-            searchType: cfg.searchType,
-            limit: 10
-          };
-        } else if (cfg.source === 'telegram') {
-          // Summarise telegram request
-          requestInput = {
-            chatId: cfg.chatId,
-            lookbackMinutes: cfg.lookbackMinutes,
-            source: 'telegram'
-          };
-        } else {
-          // Summarise discord request
-          requestInput = {
-            channelId: cfg.channelId,
-            serverId: cfg.serverId || undefined,
-            lookbackMinutes: cfg.lookbackMinutes
-          };
-        }
+        const requestInput = cfg.source === 'telegram'
+          ? {
+              chatId: cfg.chatId,
+              lookbackMinutes: cfg.lookbackMinutes,
+              source: 'telegram'
+            }
+          : {
+              channelId: cfg.channelId,
+              serverId: cfg.serverId || undefined,
+              lookbackMinutes: cfg.lookbackMinutes
+            };
 
         console.log('📋 Request details:', {
           url: entrypointUrl,
@@ -1589,28 +1514,19 @@ const server = Bun.serve({
         url.pathname.includes("summarise chat") ||
         url.pathname.includes("summarise%20telegram%20chat") ||
         url.pathname.includes("summarise telegram chat");
-      const isSearchEndpoint =
-        url.pathname.includes("search%20luma%20events") ||
-        url.pathname.includes("search luma events");
-      
-      if (isSummariseEndpoint || isSearchEndpoint) {
+      if (isSummariseEndpoint) {
         const hasPaymentHeader = req.headers.get("X-PAYMENT");
         console.log(`[payment] Entrypoint called: ${url.pathname}`);
 
-        let sourceLabel: string;
-        if (isSearchEndpoint) {
-          sourceLabel = "Search Luma events";
-        } else if (url.pathname.includes("telegram")) {
-          sourceLabel = "Summarise Telegram chat";
-        } else {
-          sourceLabel = "Summarise Discord channel";
-        }
+        const sourceLabel = url.pathname.includes("telegram")
+          ? "Summarise Telegram chat"
+          : "Summarise Discord channel";
 
         const payToAddress = (
           process.env.PAY_TO || "0x1b0006dbfbf4d8ec99cd7c40c43566eaa7d95fed"
         ).toLowerCase();
         const facilitatorUrl =
-          process.env.FACILITATOR_URL || "https://facilitator.daydreams.systems";
+          process.env.FACILITATOR_URL || "https://facilitator.x402.rs";
         const agentBaseUrl =
           process.env.AGENT_URL || `https://x402-summariser-production.up.railway.app`;
         const fullEntrypointUrl =

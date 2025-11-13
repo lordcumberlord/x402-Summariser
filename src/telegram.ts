@@ -83,10 +83,7 @@ export function createTelegramBot(options: {
 
   bot.command("start", async (ctx) => {
     await ctx.reply(
-      "Hey! I'm the Luma Event Search Bot. Use /search_events to find events:\n\n" +
-      "• /search_events on <topic> - Search events by topic (e.g., crypto, AI)\n" +
-      "• /search_events in <place> - Try searching by location (limited support)\n\n" +
-      "Note: Location search works best for cities with topic pages. For best results, use topic search."
+      "Hey! I'm the x402 Summariser Bot. Use /summarise <minutes> to get a recap."
     );
   });
 
@@ -137,110 +134,6 @@ export function createTelegramBot(options: {
       messageId: ctx.message?.message_id,
       username: ctx.from?.username,
       lookbackMinutes,
-      paymentMessageId: paymentMessage.message_id,
-      expiresAt: Date.now() + PAYMENT_CALLBACK_EXPIRY_MS,
-    });
-  });
-
-  function parseSearchEventsCommand(text: string | undefined): 
-    | { query: string; searchType: "place" | "topic" } 
-    | { error: string } {
-    if (!text) {
-      return { error: "Usage: /search_events in <place> or /search_events on <topic>" };
-    }
-
-    const trimmed = text.trim();
-    const parts = trimmed.split(/\s+/);
-
-    // Check for /search_events command
-    if (parts.length < 3) {
-      return { error: "Usage: /search_events in <place> or /search_events on <topic>" };
-    }
-
-    // Find "in" or "on" keyword
-    let searchType: "place" | "topic" | null = null;
-    let queryStartIndex = -1;
-
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i].toLowerCase();
-      if (part === "in") {
-        searchType = "place";
-        queryStartIndex = i + 1;
-        break;
-      } else if (part === "on") {
-        searchType = "topic";
-        queryStartIndex = i + 1;
-        break;
-      }
-    }
-
-    if (!searchType || queryStartIndex === -1 || queryStartIndex >= parts.length) {
-      return { error: "Usage: /search_events in <place> or /search_events on <topic>" };
-    }
-
-    const query = parts.slice(queryStartIndex).join(" ").trim();
-
-    if (!query) {
-      return { error: "Please provide a search query. Usage: /search_events in <place> or /search_events on <topic>" };
-    }
-
-    return { query, searchType };
-  }
-
-  bot.command("search_events", async (ctx) => {
-    const parseResult = parseSearchEventsCommand(ctx.message?.text);
-
-    if ("error" in parseResult) {
-      await ctx.reply(
-        `❌ ${parseResult.error}\n\n` +
-        `Examples:\n` +
-        `• /search_events on crypto\n` +
-        `• /search_events on AI\n` +
-        `• /search_events in San Francisco (limited support)`
-      );
-      return;
-    }
-
-    const { query, searchType } = parseResult;
-    const chatId = ctx.chat?.id;
-
-    if (!chatId) {
-      await ctx.reply("❌ Could not determine chat id.");
-      return;
-    }
-
-    const token = `${chatId}:${Date.now()}:${crypto.randomUUID()}`;
-
-    const callbackParam = encodeURIComponent(token);
-    const url = new URL("/pay", options.baseUrl);
-    url.searchParams.set("source", "telegram");
-    url.searchParams.set("telegram_callback", callbackParam);
-    url.searchParams.set("chatId", String(chatId));
-    url.searchParams.set("query", query);
-    url.searchParams.set("searchType", searchType);
-
-    const keyboard = new InlineKeyboard().url(
-      "Pay $0.05 via x402",
-      url.toString()
-    );
-
-    const searchTypeLabel = searchType === "place" ? "location" : "topic";
-    const paymentMessage = await ctx.reply(
-      `🪙 *Payment Required*\n\n` +
-        `Searching for events by ${searchTypeLabel}: *${query}*`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      }
-    );
-
-    pendingTelegramCallbacks.set(token, {
-      chatId,
-      threadId: "message_thread_id" in ctx.message ? ctx.message.message_thread_id : undefined,
-      messageId: ctx.message?.message_id,
-      username: ctx.from?.username,
-      query,
-      searchType,
       paymentMessageId: paymentMessage.message_id,
       expiresAt: Date.now() + PAYMENT_CALLBACK_EXPIRY_MS,
     });
